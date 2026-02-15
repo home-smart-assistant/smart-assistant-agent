@@ -1,4 +1,4 @@
-﻿# smart_assistant_backend_agent
+﻿# smart_assistant_agent
 
 Python Agent 编排服务。
 
@@ -40,3 +40,4 @@ uvicorn app.main:app --host 0.0.0.0 --port 8091 --reload
 docker build -t smart-assistant-agent .
 docker run --rm -p 8091:8091 --env-file .env.example smart-assistant-agent
 ```
+

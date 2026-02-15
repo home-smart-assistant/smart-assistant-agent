@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 
-APP_NAME = "smart_assistant_backend_agent"
+APP_NAME = "smart_assistant_agent"
 HA_BRIDGE_URL = os.getenv("HA_BRIDGE_URL", "http://localhost:8092")
 MEMORY_MAX_TURNS = int(os.getenv("AGENT_MEMORY_MAX_TURNS", "12"))
 TOOL_AUTO_EXECUTE = os.getenv("AGENT_TOOL_AUTO_EXECUTE", "true").lower() == "true"
@@ -195,3 +195,4 @@ def render_chat_reply(session_id: str, text: str) -> str:
         return "在的主人。"
 
     return f"收到。当前会话已累计 {turns} 条短期记忆。"
+
