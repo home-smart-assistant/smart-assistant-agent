@@ -35,6 +35,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8091 --reload
 - `GET /v1/agent/session/{session_id}`
 - `DELETE /v1/agent/session/{session_id}`
 
+## API 契约
+- `docs/openapi/agent.openapi.yaml`
+
 ## Docker
 ```bash
 docker build -t smart-assistant-agent .

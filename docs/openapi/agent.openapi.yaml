@@ -1,0 +1,83 @@
+﻿openapi: 3.0.3
+info:
+  title: Smart Assistant Agent API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8091
+paths:
+  /health:
+    get:
+      summary: Agent health
+      responses:
+        '200':
+          description: OK
+  /v1/agent/respond:
+    post:
+      summary: Generate response and optional tool call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                session_id:
+                  type: string
+                text:
+                  type: string
+                metadata:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Agent response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  reply_text:
+                    type: string
+                  source:
+                    type: string
+                  tool_call:
+                    $ref: '#/components/schemas/ToolCall'
+                  tool_result:
+                    type: object
+                    additionalProperties: true
+  /v1/agent/session/{session_id}:
+    get:
+      summary: Query session memory
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Memory list
+    delete:
+      summary: Clear session memory
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cleared
+components:
+  schemas:
+    ToolCall:
+      type: object
+      properties:
+        tool_name:
+          type: string
+        arguments:
+          type: object
+          additionalProperties: true
