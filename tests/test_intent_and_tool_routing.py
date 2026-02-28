@@ -20,20 +20,36 @@ class TestToolCatalogClimateIntent(unittest.TestCase):
         )
 
     def test_detect_turn_on_climate_in_study(self) -> None:
-        text = "\u5e2e\u6211\u6253\u5f00\u4e66\u623f\u7684\u7a7a\u8c03"
+        text = "帮我打开书房的空调"
         call = self.catalog.detect_tool_call(text)
         self.assertIsNotNone(call)
         assert call is not None
         self.assertEqual("home.climate.turn_on", call.tool_name)
         self.assertIn(call.arguments.get("area"), {"study", "living_room"})
 
+    def test_detect_turn_on_light_in_dining_room(self) -> None:
+        text = "打开餐厅灯"
+        call = self.catalog.detect_tool_call(text)
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual("home.lights.on", call.tool_name)
+        self.assertEqual("dining_room", call.arguments.get("area"))
+
     def test_detect_leave_home_prefers_turn_off_climate(self) -> None:
-        text = "\u6211\u5728\u9910\u5385\uff0c\u7a7a\u8c03\u662f\u5f00\u542f\u7684\uff0c\u6211\u73b0\u5728\u8981\u79bb\u5f00\u4e86"
+        text = "我在餐厅，空调是开启的，我现在要离开了"
         call = self.catalog.detect_tool_call(text)
         self.assertIsNotNone(call)
         assert call is not None
         self.assertEqual("home.climate.turn_off", call.tool_name)
-        self.assertEqual("living_room", call.arguments.get("area"))
+        self.assertEqual("dining_room", call.arguments.get("area"))
+
+    def test_detect_leave_home_prefers_turn_off_lights(self) -> None:
+        text = "我在餐厅，灯是开启的，我现在要离开了"
+        call = self.catalog.detect_tool_call(text)
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual("home.lights.off", call.tool_name)
+        self.assertEqual("dining_room", call.arguments.get("area"))
 
 
 class TestIntentRouteGuard(unittest.TestCase):
@@ -47,7 +63,7 @@ class TestIntentRouteGuard(unittest.TestCase):
         self.service.catalog = self.catalog
 
     def test_rule_home_automation_not_overridden_by_llm_misroute(self) -> None:
-        text = "\u5e2e\u6211\u6253\u5f00\u4e66\u623f\u7684\u7a7a\u8c03"
+        text = "帮我打开书房的空调"
         rule = IntentRouteDecision(
             route=HOME_AUTOMATION_ROUTE,
             confidence=0.82,
@@ -64,7 +80,7 @@ class TestIntentRouteGuard(unittest.TestCase):
         self.assertTrue(keep_rule)
 
     def test_rule_router_marks_aircon_open_as_home_automation(self) -> None:
-        text = "\u5e2e\u6211\u6253\u5f00\u4e66\u623f\u7684\u7a7a\u8c03"
+        text = "帮我打开书房的空调"
         decision = self.service._rule_route_decision(text, {})
         self.assertEqual(HOME_AUTOMATION_ROUTE, decision.route)
 
@@ -100,6 +116,68 @@ class TestCandidateFilteringWithContext(unittest.TestCase):
         )
         self.assertTrue(any(name.startswith("home.lights.") for name in names))
         self.assertFalse(any(name.startswith("home.climate.") for name in names))
+
+
+class TestAreaSyncIntent(unittest.TestCase):
+    def setUp(self) -> None:
+        self.catalog = ToolCatalog(
+            bridge_url="http://127.0.0.1:1",
+            timeout_seconds=1.0,
+            refresh_interval_seconds=3600.0,
+        )
+        self.service = object.__new__(AgentService)
+        self.service.catalog = self.catalog
+
+    def test_detect_area_sync_tool_call(self) -> None:
+        text = "设置区域：玄关，厨房，客厅，主卧，次卧，餐厅，书房，卫生间，走廊，删除无用区域"
+        call = self.catalog.detect_tool_call(text)
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual("home.areas.sync", call.tool_name)
+        self.assertTrue(call.arguments.get("delete_unused"))
+        self.assertEqual(
+            call.arguments.get("target_areas"),
+            ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
+        )
+
+    def test_area_phrase_routes_to_home_automation(self) -> None:
+        decision = self.service._rule_route_decision("帮我整理一下区域", {})
+        self.assertEqual(HOME_AUTOMATION_ROUTE, decision.route)
+
+    def test_detect_area_audit_tool_call(self) -> None:
+        text = (
+            "检查一下区域设备归属，"
+            "玄关，厨房，客厅，主卧，次卧，餐厅，书房，卫生间，走廊"
+        )
+        call = self.catalog.detect_tool_call(text)
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual("home.areas.audit", call.tool_name)
+        self.assertEqual(
+            call.arguments.get("target_areas"),
+            ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
+        )
+
+    def test_detect_area_audit_without_area_keyword(self) -> None:
+        text = (
+            "检查一下玄关，厨房，客厅，主卧，"
+            "次卧，餐厅，书房，卫生间，走廊的设备归属"
+        )
+        call = self.catalog.detect_tool_call(text)
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual("home.areas.audit", call.tool_name)
+
+    def test_detect_area_assign_tool_call(self) -> None:
+        text = (
+            "把玄关、厨房、客厅、主卧、次卧、"
+            "餐厅、书房、卫生间、走廊的未分配设备按建议批量归类"
+        )
+        call = self.catalog.detect_tool_call(text)
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual("home.areas.assign", call.tool_name)
+        self.assertTrue(call.arguments.get("only_with_suggestion"))
 
 
 if __name__ == "__main__":

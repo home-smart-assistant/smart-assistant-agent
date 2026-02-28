@@ -57,3 +57,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8091
 - `docs/openapi/agent.openapi.yaml`
 - `docs/llm-provider-architecture.md`
 - `docs/agent-architecture.md`
+
+## Encoding Policy
+- All source files and docs use UTF-8.
+- Before routing/execution, request text and metadata are normalized to repair common mojibake.
+- If text cannot be repaired reliably and `TEXT_ENCODING_STRICT=true`, API returns `400` with `error_code=invalid_text_encoding`.

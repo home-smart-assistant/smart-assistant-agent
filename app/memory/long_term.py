@@ -17,7 +17,7 @@ from app.memory.faiss_store import FaissIndexStore
 from app.memory.sqlite_store import SqliteMemoryStore
 
 
-TOKEN_PATTERN = re.compile(r"[\w\u4e00-\u9fff]+")
+TOKEN_PATTERN = re.compile(r"[\w一-龿]+")
 
 
 def tokenize(text: str) -> list[str]:

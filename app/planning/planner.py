@@ -8,7 +8,7 @@ from app.tools.catalog import ToolCatalog
 
 
 CLAUSE_SPLIT_PATTERN = re.compile(r"[，,。；;]+")
-CONNECTOR_PATTERN = re.compile(r"(然后|接着|再|并且|同时|先|最后)")
+CONNECTOR_PATTERN = re.compile(r"(然后|接着|并且|同时|以及|最后)")
 
 
 @dataclass
@@ -43,6 +43,34 @@ class Planner:
         ]
         tool_calls: list[ToolCall] = []
         unresolved_queries: list[str] = []
+
+        # Certain global intents (e.g. area sync) should not be clause-split.
+        holistic_first = self._catalog.detect_tool_call(text)
+        if holistic_first is not None and holistic_first.tool_name in {
+            "home.areas.sync",
+            "home.areas.audit",
+            "home.areas.assign",
+        }:
+            steps.append(
+                PlanStep(
+                    step_id=2,
+                    stage="decide",
+                    summary=f"识别工具调用: {holistic_first.tool_name}",
+                    status="completed",
+                    tool_call=holistic_first,
+                )
+            )
+            steps.append(
+                PlanStep(
+                    step_id=3,
+                    stage="act",
+                    summary=f"执行工具: {holistic_first.tool_name}",
+                    status="pending",
+                    tool_call=holistic_first,
+                )
+            )
+            steps.append(PlanStep(step_id=4, stage="feedback", summary="生成反馈并写入记忆", status="pending"))
+            return AgentPlan(steps=steps, tool_calls=[holistic_first], unresolved_queries=[])
 
         clauses = self._split_to_clauses(text)
         next_id = 2
@@ -83,7 +111,7 @@ class Planner:
                     PlanStep(
                         step_id=next_id,
                         stage="decide",
-                        summary=f"璇嗗埆鏁翠綋璇彞宸ュ叿璋冪敤: {holistic_call.tool_name}",
+                        summary=f"全局解析识别工具调用: {holistic_call.tool_name}",
                         status="completed",
                         tool_call=holistic_call,
                     )
@@ -93,7 +121,7 @@ class Planner:
                     PlanStep(
                         step_id=next_id,
                         stage="act",
-                        summary=f"鎵ц宸ュ叿: {holistic_call.tool_name}",
+                        summary=f"执行工具: {holistic_call.tool_name}",
                         status="pending",
                         tool_call=holistic_call,
                     )
@@ -111,9 +139,7 @@ class Planner:
             )
             next_id += 1
 
-        steps.append(
-            PlanStep(step_id=next_id, stage="feedback", summary="生成反馈并写入记忆", status="pending")
-        )
+        steps.append(PlanStep(step_id=next_id, stage="feedback", summary="生成反馈并写入记忆", status="pending"))
 
         return AgentPlan(
             steps=steps,
@@ -164,9 +190,7 @@ class Planner:
             )
             next_id += 1
 
-        steps.append(
-            PlanStep(step_id=next_id, stage="feedback", summary="生成反馈并写入记忆", status="pending")
-        )
+        steps.append(PlanStep(step_id=next_id, stage="feedback", summary="生成反馈并写入记忆", status="pending"))
         return AgentPlan(
             steps=steps,
             tool_calls=tool_calls[: self._max_plan_steps],

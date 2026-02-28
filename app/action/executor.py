@@ -6,6 +6,7 @@ import httpx
 
 from app.core.models import ToolCall
 from app.core.security import PermissionManager
+from app.core.text_codec import EncodingNormalizationError, normalize_dict
 from app.tools.catalog import ToolCatalog
 
 
@@ -18,6 +19,7 @@ class ActionExecutor:
         rollback_on_failure: bool,
         catalog: ToolCatalog,
         permission_manager: PermissionManager,
+        text_encoding_strict: bool = True,
     ) -> None:
         self._bridge_url = bridge_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
@@ -25,6 +27,7 @@ class ActionExecutor:
         self._rollback_on_failure = rollback_on_failure
         self._catalog = catalog
         self._permission_manager = permission_manager
+        self._text_encoding_strict = text_encoding_strict
 
     async def execute(
         self,
@@ -122,9 +125,26 @@ class ActionExecutor:
         return False
 
     async def _execute_single(self, tool_call: ToolCall, trace_id: str) -> dict[str, Any]:
+        try:
+            normalized_arguments = normalize_dict(
+                tool_call.arguments,
+                field_path=f"tool_call.arguments.{tool_call.tool_name}",
+                strict=self._text_encoding_strict,
+            )
+        except EncodingNormalizationError as ex:
+            return {
+                "tool_name": tool_call.tool_name,
+                "arguments": tool_call.arguments,
+                "success": False,
+                "message": f"invalid_text_encoding:{ex.field_path}",
+                "error_code": "invalid_text_encoding",
+                "trace_id": trace_id,
+                "executed": False,
+            }
+
         payload = {
             "tool_name": tool_call.tool_name,
-            "arguments": tool_call.arguments,
+            "arguments": normalized_arguments,
             "trace_id": trace_id,
         }
         try:

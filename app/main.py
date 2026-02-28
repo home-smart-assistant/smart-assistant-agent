@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 
 from app.core.config import AppConfig
 from app.core.models import AgentRespondRequest, AgentRespondResponse
+from app.core.text_codec import EncodingNormalizationError
 from app.runtime import AgentService
 
 
@@ -18,7 +19,10 @@ service = AgentService(config)
 
 @app.post("/v1/agent/respond", response_model=AgentRespondResponse)
 async def respond(req: AgentRespondRequest) -> AgentRespondResponse:
-    return await service.respond(req)
+    try:
+        return await service.respond(req)
+    except EncodingNormalizationError as ex:
+        raise HTTPException(status_code=400, detail=ex.to_error_detail()) from ex
 
 
 @app.get("/v1/agent/session/{session_id}")

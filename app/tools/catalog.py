@@ -10,118 +10,201 @@ from typing import Any, Callable
 import httpx
 
 from app.core.models import ToolCall
+from app.core.text_codec import EncodingNormalizationError, normalize_payload, normalize_text
 
 
-LIGHT_CHAR = "\u706f"
-SCENE_CINEMA_WORD = "\u5f71\u9662\u6a21\u5f0f"
-SCENE_HOME_WORD = "\u56de\u5bb6\u6a21\u5f0f"
-SCENE_GOOD_NIGHT_WORD = "\u665a\u5b89\u6a21\u5f0f"
-CLIMATE_WORD = "\u7a7a\u8c03"
+LIGHT_CHAR = "灯"
+SCENE_CINEMA_WORD = "影院模式"
+SCENE_HOME_WORD = "回家模式"
+SCENE_GOOD_NIGHT_WORD = "晚安模式"
+CLIMATE_WORD = "空调"
 
 LIGHT_ON_KEYWORDS = (
-    "\u5f00\u706f",
-    "\u6253\u5f00\u706f",
-    "\u5f00\u4e00\u4e0b\u706f",
-    "\u628a\u706f\u6253\u5f00",
-    "\u5e2e\u6211\u6253\u5f00\u706f",
+    "开灯",
+    "打开灯",
+    "开一下灯",
+    "把灯打开",
+    "帮我打开灯",
     "turn on",
     "lights on",
 )
 LIGHT_OFF_KEYWORDS = (
-    "\u5173\u706f",
-    "\u5173\u95ed\u706f",
-    "\u5173\u6389\u706f",
-    "\u628a\u706f\u5173\u6389",
-    "\u5e2e\u6211\u5173\u706f",
+    "关灯",
+    "关闭灯",
+    "关掉灯",
+    "把灯关掉",
+    "帮我关灯",
     "turn off",
     "lights off",
 )
-LIGHT_ON_VERBS = ("\u6253\u5f00", "\u5f00\u542f", "\u5f00")
-LIGHT_OFF_VERBS = ("\u5173\u95ed", "\u5173\u6389", "\u5173")
+LIGHT_ON_VERBS = ("打开", "开启", "开")
+LIGHT_OFF_VERBS = ("关闭", "关掉", "关")
 LIGHT_STATE_ON_PHRASES = (
-    "\u706f\u662f\u5f00\u542f",
-    "\u706f\u5f00\u542f\u4e86",
-    "\u706f\u5df2\u7ecf\u5f00\u542f",
-    "\u706f\u5f00\u7740",
-    "\u706f\u662f\u5f00\u7684",
-    "\u706f\u4eae\u7740",
+    "灯是开启",
+    "灯开启了",
+    "灯已经开启",
+    "灯开着",
+    "灯是开的",
+    "灯亮着",
     "light is on",
     "lights are on",
 )
 LIGHT_STATE_OFF_PHRASES = (
-    "\u706f\u662f\u5173\u95ed",
-    "\u706f\u5173\u7740",
-    "\u706f\u6ca1\u5f00",
-    "\u706f\u6ca1\u6709\u5f00",
-    "\u706f\u6ca1\u6709\u5f00\u542f",
-    "\u706f\u662f\u706d\u7684",
-    "\u706f\u662f\u5173\u7684",
+    "灯是关闭",
+    "灯关着",
+    "灯没开",
+    "灯没有开",
+    "灯没有开启",
+    "灯是灭的",
+    "灯是关的",
     "light is off",
     "lights are off",
 )
 LIGHT_REQUEST_CUES = (
-    "\u5e2e\u6211",
-    "\u8bf7",
-    "\u9ebb\u70e6",
-    "\u628a",
-    "\u7ed9\u6211",
+    "帮我",
+    "请",
+    "麻烦",
+    "把",
+    "给我",
     "please",
     "can you",
     "turn",
     "switch",
 )
 LEAVE_HOME_HINTS = (
-    "\u79bb\u5f00",
-    "\u51fa\u95e8",
-    "\u8981\u8d70\u4e86",
-    "\u5916\u51fa",
+    "离开",
+    "出门",
+    "要走了",
+    "外出",
     "leave",
     "going out",
 )
 
-CLIMATE_SET_KEYWORDS = ("\u8c03\u5230", "\u8bbe\u7f6e", "\u8bbe\u4e3a", "\u8c03\u6210", "\u8c03\u4e3a", "\u5f00\u5230")
+CLIMATE_SET_KEYWORDS = ("调到", "设置", "设为", "调成", "调为", "开到")
 CLIMATE_ON_KEYWORDS = (
-    "\u5f00\u7a7a\u8c03",
-    "\u6253\u5f00\u7a7a\u8c03",
-    "\u5f00\u4e00\u4e0b\u7a7a\u8c03",
-    "\u5f00\u542f\u7a7a\u8c03",
-    "\u628a\u7a7a\u8c03\u6253\u5f00",
-    "\u5e2e\u6211\u6253\u5f00\u7a7a\u8c03",
+    "开空调",
+    "打开空调",
+    "开一下空调",
+    "开启空调",
+    "把空调打开",
+    "帮我打开空调",
     "turn on air conditioner",
     "turn on ac",
     "ac on",
 )
 CLIMATE_OFF_KEYWORDS = (
-    "\u5173\u7a7a\u8c03",
-    "\u5173\u95ed\u7a7a\u8c03",
-    "\u5173\u6389\u7a7a\u8c03",
-    "\u628a\u7a7a\u8c03\u5173\u6389",
-    "\u5e2e\u6211\u5173\u7a7a\u8c03",
+    "关空调",
+    "关闭空调",
+    "关掉空调",
+    "把空调关掉",
+    "帮我关空调",
     "turn off air conditioner",
     "turn off ac",
     "ac off",
 )
-CLIMATE_ON_VERBS = ("\u6253\u5f00", "\u5f00\u542f", "\u5f00", "\u542f\u52a8")
-CLIMATE_OFF_VERBS = ("\u5173\u95ed", "\u5173\u6389", "\u5173", "\u505c\u6b62")
+CLIMATE_ON_VERBS = ("打开", "开启", "开", "启动")
+CLIMATE_OFF_VERBS = ("关闭", "关掉", "关", "停止")
 CLIMATE_STATE_ON_PHRASES = (
-    "\u7a7a\u8c03\u662f\u5f00\u542f",
-    "\u7a7a\u8c03\u5f00\u542f\u4e86",
-    "\u7a7a\u8c03\u5df2\u7ecf\u5f00\u542f",
-    "\u7a7a\u8c03\u5f00\u7740",
-    "\u7a7a\u8c03\u662f\u5f00\u7684",
+    "空调是开启",
+    "空调开启了",
+    "空调已经开启",
+    "空调开着",
+    "空调是开的",
     "ac is on",
     "air conditioner is on",
 )
 CLIMATE_STATE_OFF_PHRASES = (
-    "\u7a7a\u8c03\u662f\u5173\u95ed",
-    "\u7a7a\u8c03\u5173\u7740",
-    "\u7a7a\u8c03\u6ca1\u5f00",
-    "\u7a7a\u8c03\u6ca1\u6709\u5f00",
-    "\u7a7a\u8c03\u662f\u5173\u7684",
+    "空调是关闭",
+    "空调关着",
+    "空调没开",
+    "空调没有开",
+    "空调是关的",
     "ac is off",
     "air conditioner is off",
 )
 CLIMATE_REQUEST_CUES = LIGHT_REQUEST_CUES
+
+AREA_WORD = "区域"
+AREA_SYNC_HINTS = (
+    "区域",
+    "房间",
+    "区域整理",
+    "房间整理",
+    "设置区域",
+    "设置房间",
+    "创建区域",
+    "创建房间",
+    "area",
+    "areas",
+)
+AREA_SYNC_ACTION_HINTS = (
+    "整理",
+    "设置",
+    "创建",
+    "同步",
+    "set",
+    "setup",
+    "create",
+    "sync",
+)
+AREA_DELETE_HINTS = (
+    "删掉",
+    "删除",
+    "清理",
+    "无用",
+    "delete",
+    "remove",
+    "cleanup",
+)
+AREA_AUDIT_HINTS = (
+    "检查",
+    "排查",
+    "审计",
+    "归属",
+    "归区",
+    "未分配",
+    "未归属",
+    "漏分配",
+    "audit",
+    "check",
+    "inspect",
+    "unassigned",
+)
+AREA_ASSIGN_HINTS = (
+    "归类",
+    "分配",
+    "归位",
+    "回写",
+    "修复归属",
+    "应用建议",
+    "批量归类",
+    "assign",
+    "apply suggestion",
+)
+AREA_AUDIT_UNAVAILABLE_HINTS = (
+    "离线",
+    "不可用",
+    "offline",
+    "unavailable",
+)
+TARGET_AREA_NAMES = ("玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊")
+AREA_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
+    "xuan_guan": ("玄关", "xuan_guan", "xuanguan", "entryway", "foyer"),
+    "kitchen": ("厨房", "kitchen", "chu_fang", "chufang"),
+    "living_room": ("客厅", "living room", "living_room", "livingroom", "ke_ting", "keting"),
+    "master_bedroom": ("主卧", "主卧室", "master bedroom", "master_bedroom", "masterbedroom", "zhu_wo", "zhuwo"),
+    "guest_bedroom": ("次卧", "次卧室", "guest bedroom", "guest_bedroom", "guestbedroom", "ci_wo", "ciwo"),
+    "bedroom": ("卧室", "bedroom"),
+    "dining_room": ("餐厅", "dining room", "dining_room", "diningroom", "can_ting", "canting"),
+    "study": ("书房", "study", "shu_fang", "shufang"),
+    "bathroom": ("卫生间", "浴室", "bathroom", "wc", "toilet", "wei_sheng_jian", "weishengjian"),
+    "corridor": ("走廊", "corridor", "hallway", "zou_lang", "zoulang"),
+}
+AREA_DETECTION_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "master_bedroom": ("bedroom",),
+    "guest_bedroom": ("bedroom",),
+    "bedroom": ("master_bedroom", "guest_bedroom"),
+}
 
 
 @dataclass(frozen=True)
@@ -150,10 +233,12 @@ class ToolCatalog:
         bridge_url: str,
         timeout_seconds: float,
         refresh_interval_seconds: float = 30.0,
+        text_encoding_strict: bool = True,
     ) -> None:
         self._bridge_url = bridge_url.rstrip("/")
         self._timeout_seconds = max(1.0, timeout_seconds)
         self._refresh_interval_seconds = max(5.0, refresh_interval_seconds)
+        self._text_encoding_strict = text_encoding_strict
         self._lock = threading.RLock()
         self._last_refresh_at = 0.0
         self._last_refresh_error: str | None = None
@@ -318,7 +403,15 @@ class ToolCatalog:
         if strategy in {"light_area", "cover_area", "climate_area", "climate_area_temperature"}:
             area = merged.get("area")
             if area is not None:
-                merged["area"] = str(area).strip().lower()
+                try:
+                    area_text = normalize_text(
+                        str(area),
+                        field_path=f"arguments.area.{tool_call.tool_name}",
+                        strict=self._text_encoding_strict,
+                    )
+                except EncodingNormalizationError as ex:
+                    return None, f"invalid_text_encoding:{ex.field_path}"
+                merged["area"] = area_text.strip().lower()
             elif "entity_id" not in merged:
                 merged["area"] = self._default_area()
 
@@ -339,6 +432,117 @@ class ToolCatalog:
             if not 16 <= temperature <= 30:
                 return None, "invalid_arguments:temperature must be between 16 and 30"
             merged["temperature"] = temperature
+
+        if strategy == "area_sync":
+            target_raw = merged.get("target_areas")
+            target_values: list[str] = []
+            if isinstance(target_raw, str):
+                try:
+                    normalized_targets = normalize_text(
+                        target_raw,
+                        field_path=f"arguments.target_areas.{tool_call.tool_name}",
+                        strict=self._text_encoding_strict,
+                    )
+                except EncodingNormalizationError as ex:
+                    return None, f"invalid_text_encoding:{ex.field_path}"
+                normalized_targets = normalized_targets.replace("，", ",")
+                target_values = [item.strip() for item in normalized_targets.split(",") if item.strip()]
+            elif isinstance(target_raw, (list, tuple, set)):
+                try:
+                    normalized_target_raw = normalize_payload(
+                        target_raw,
+                        field_path=f"arguments.target_areas.{tool_call.tool_name}",
+                        strict=self._text_encoding_strict,
+                    )
+                except EncodingNormalizationError as ex:
+                    return None, f"invalid_text_encoding:{ex.field_path}"
+                target_values = [str(item).strip() for item in normalized_target_raw if str(item).strip()]
+            if not target_values:
+                return None, "invalid_arguments:target_areas is required"
+            merged["target_areas"] = list(dict.fromkeys(target_values))
+            merged["delete_unused"] = self._to_bool(merged.get("delete_unused"), default=True)
+            merged["force_delete_in_use"] = self._to_bool(merged.get("force_delete_in_use"), default=False)
+
+        if strategy == "area_audit":
+            target_raw = merged.get("target_areas")
+            target_values: list[str] = []
+            if isinstance(target_raw, str):
+                try:
+                    normalized_targets = normalize_text(
+                        target_raw,
+                        field_path=f"arguments.target_areas.{tool_call.tool_name}",
+                        strict=self._text_encoding_strict,
+                    )
+                except EncodingNormalizationError as ex:
+                    return None, f"invalid_text_encoding:{ex.field_path}"
+                normalized_targets = normalized_targets.replace("，", ",")
+                target_values = [item.strip() for item in normalized_targets.split(",") if item.strip()]
+            elif isinstance(target_raw, (list, tuple, set)):
+                try:
+                    normalized_target_raw = normalize_payload(
+                        target_raw,
+                        field_path=f"arguments.target_areas.{tool_call.tool_name}",
+                        strict=self._text_encoding_strict,
+                    )
+                except EncodingNormalizationError as ex:
+                    return None, f"invalid_text_encoding:{ex.field_path}"
+                target_values = [str(item).strip() for item in normalized_target_raw if str(item).strip()]
+            if not target_values:
+                return None, "invalid_arguments:target_areas is required"
+            merged["target_areas"] = list(dict.fromkeys(target_values))
+
+            domains_raw = merged.get("domains")
+            domains: list[str] = []
+            if isinstance(domains_raw, str):
+                domains = [item.strip().lower() for item in domains_raw.split(",") if item.strip()]
+            elif isinstance(domains_raw, (list, tuple, set)):
+                domains = [str(item).strip().lower() for item in domains_raw if str(item).strip()]
+            if not domains:
+                domains = ["light", "switch", "climate", "cover", "fan"]
+            merged["domains"] = list(dict.fromkeys(domains))
+            merged["include_unavailable"] = self._to_bool(merged.get("include_unavailable"), default=False)
+
+        if strategy == "area_assign":
+            target_raw = merged.get("target_areas")
+            target_values: list[str] = []
+            if isinstance(target_raw, str):
+                try:
+                    normalized_targets = normalize_text(
+                        target_raw,
+                        field_path=f"arguments.target_areas.{tool_call.tool_name}",
+                        strict=self._text_encoding_strict,
+                    )
+                except EncodingNormalizationError as ex:
+                    return None, f"invalid_text_encoding:{ex.field_path}"
+                normalized_targets = normalized_targets.replace("，", ",")
+                target_values = [item.strip() for item in normalized_targets.split(",") if item.strip()]
+            elif isinstance(target_raw, (list, tuple, set)):
+                try:
+                    normalized_target_raw = normalize_payload(
+                        target_raw,
+                        field_path=f"arguments.target_areas.{tool_call.tool_name}",
+                        strict=self._text_encoding_strict,
+                    )
+                except EncodingNormalizationError as ex:
+                    return None, f"invalid_text_encoding:{ex.field_path}"
+                target_values = [str(item).strip() for item in normalized_target_raw if str(item).strip()]
+            if not target_values:
+                return None, "invalid_arguments:target_areas is required"
+            merged["target_areas"] = list(dict.fromkeys(target_values))
+
+            domains_raw = merged.get("domains")
+            domains: list[str] = []
+            if isinstance(domains_raw, str):
+                domains = [item.strip().lower() for item in domains_raw.split(",") if item.strip()]
+            elif isinstance(domains_raw, (list, tuple, set)):
+                domains = [str(item).strip().lower() for item in domains_raw if str(item).strip()]
+            if not domains:
+                domains = ["light", "switch", "climate", "cover", "fan"]
+            merged["domains"] = list(dict.fromkeys(domains))
+
+            merged["include_unavailable"] = self._to_bool(merged.get("include_unavailable"), default=False)
+            merged["only_with_suggestion"] = self._to_bool(merged.get("only_with_suggestion"), default=True)
+            merged["max_updates"] = self._clamp_positive_int(merged.get("max_updates"), default=200, minimum=1, maximum=2000)
 
         return merged, None
 
@@ -364,6 +568,16 @@ class ToolCatalog:
             return None
         lower = normalized.lower()
         area = self._detect_area(lower)
+
+        area_sync_call = self._detect_area_sync_tool_call(lower)
+        if area_sync_call is not None:
+            return area_sync_call
+        area_assign_call = self._detect_area_assign_tool_call(lower)
+        if area_assign_call is not None:
+            return area_assign_call
+        area_audit_call = self._detect_area_audit_tool_call(lower)
+        if area_audit_call is not None:
+            return area_audit_call
 
         if self._has_light_off_intent(lower):
             target = self._find_light_tool(service="turn_off")
@@ -568,6 +782,47 @@ class ToolCatalog:
                 "enabled": True,
                 "default_arguments": {"area": "living_room"},
             },
+            {
+                "tool_name": "home.areas.sync",
+                "description": "Ensure target HA areas and clean unused areas",
+                "strategy": "area_sync",
+                "domain": "ha",
+                "service": "areas_sync",
+                "enabled": True,
+                "default_arguments": {
+                    "target_areas": ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
+                    "delete_unused": True,
+                    "force_delete_in_use": False,
+                },
+            },
+            {
+                "tool_name": "home.areas.audit",
+                "description": "Audit area assignment and suggest target areas for unassigned entities",
+                "strategy": "area_audit",
+                "domain": "ha",
+                "service": "areas_audit",
+                "enabled": True,
+                "default_arguments": {
+                    "target_areas": ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
+                    "domains": ["light", "switch", "climate", "cover", "fan"],
+                    "include_unavailable": False,
+                },
+            },
+            {
+                "tool_name": "home.areas.assign",
+                "description": "Assign unassigned entities to areas based on audit suggestions",
+                "strategy": "area_assign",
+                "domain": "ha",
+                "service": "areas_assign",
+                "enabled": True,
+                "default_arguments": {
+                    "target_areas": ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
+                    "domains": ["light", "switch", "climate", "cover", "fan"],
+                    "include_unavailable": False,
+                    "only_with_suggestion": True,
+                    "max_updates": 200,
+                },
+            },
         ]
         self._specs = self._build_specs_from_rows(fallback_rows)
         self._api_endpoints = {("POST", "/v1/tools/call")}
@@ -601,6 +856,46 @@ class ToolCatalog:
         if strategy == "climate_area_temperature":
             schema["properties"]["temperature"] = {"type": "integer", "minimum": 16, "maximum": 30}
             schema["required"] = ["temperature"]
+
+        if strategy == "area_sync":
+            schema["properties"]["target_areas"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+            }
+            schema["properties"]["delete_unused"] = {"type": "boolean"}
+            schema["properties"]["force_delete_in_use"] = {"type": "boolean"}
+            schema["required"] = ["target_areas"]
+
+        if strategy == "area_audit":
+            schema["properties"]["target_areas"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+            }
+            schema["properties"]["domains"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+            }
+            schema["properties"]["include_unavailable"] = {"type": "boolean"}
+            schema["required"] = ["target_areas"]
+
+        if strategy == "area_assign":
+            schema["properties"]["target_areas"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+            }
+            schema["properties"]["domains"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+            }
+            schema["properties"]["include_unavailable"] = {"type": "boolean"}
+            schema["properties"]["only_with_suggestion"] = {"type": "boolean"}
+            schema["properties"]["max_updates"] = {"type": "integer", "minimum": 1, "maximum": 2000}
+            schema["required"] = ["target_areas"]
 
         if strategy == "passthrough":
             return schema
@@ -645,6 +940,24 @@ class ToolCatalog:
         except (TypeError, ValueError):
             return fallback
         return value if value > 0 else fallback
+
+    def _to_bool(self, raw: Any, *, default: bool) -> bool:
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return default
+
+    def _clamp_positive_int(self, raw: Any, *, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, min(maximum, value))
 
     def _clamp_percentage(self, raw: Any, fallback: int) -> int:
         try:
@@ -856,6 +1169,110 @@ class ToolCatalog:
             return sorted(fallback, key=lambda row: row.tool_name)[0]
         return None
 
+    def _find_area_sync_tool(self) -> ToolSpec | None:
+        with self._lock:
+            candidates = [row for row in self._specs.values() if row.enabled and row.strategy == "area_sync"]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda row: row.tool_name)[0]
+
+    def _find_area_audit_tool(self) -> ToolSpec | None:
+        with self._lock:
+            candidates = [row for row in self._specs.values() if row.enabled and row.strategy == "area_audit"]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda row: row.tool_name)[0]
+
+    def _find_area_assign_tool(self) -> ToolSpec | None:
+        with self._lock:
+            candidates = [row for row in self._specs.values() if row.enabled and row.strategy == "area_assign"]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda row: row.tool_name)[0]
+
+    def _detect_area_sync_tool_call(self, text: str) -> ToolCall | None:
+        if not self._contains_any(text, AREA_SYNC_HINTS):
+            return None
+        if not (self._contains_any(text, AREA_SYNC_ACTION_HINTS) or self._contains_any(text, AREA_DELETE_HINTS)):
+            return None
+        target_areas = self._extract_target_areas(text)
+        if not target_areas:
+            return None
+        target = self._find_area_sync_tool()
+        if target is None:
+            return None
+        return ToolCall(
+            tool_name=target.tool_name,
+            arguments={
+                "target_areas": target_areas,
+                "delete_unused": self._contains_any(text, AREA_DELETE_HINTS),
+                "force_delete_in_use": False,
+            },
+        )
+
+    def _detect_area_assign_tool_call(self, text: str) -> ToolCall | None:
+        target_areas = self._extract_target_areas(text)
+        if not self._contains_any(text, AREA_SYNC_HINTS) and not target_areas:
+            return None
+        if not self._contains_any(text, AREA_ASSIGN_HINTS):
+            return None
+        target = self._find_area_assign_tool()
+        if target is None:
+            return None
+        target_areas = target_areas or list(TARGET_AREA_NAMES)
+        return ToolCall(
+            tool_name=target.tool_name,
+            arguments={
+                "target_areas": target_areas,
+                "domains": self._extract_area_audit_domains(text),
+                "include_unavailable": self._contains_any(text, AREA_AUDIT_UNAVAILABLE_HINTS),
+                "only_with_suggestion": True,
+                "max_updates": 200,
+            },
+        )
+
+    def _detect_area_audit_tool_call(self, text: str) -> ToolCall | None:
+        target_areas = self._extract_target_areas(text)
+        if not self._contains_any(text, AREA_SYNC_HINTS) and not target_areas:
+            return None
+        if not self._contains_any(text, AREA_AUDIT_HINTS):
+            return None
+        target = self._find_area_audit_tool()
+        if target is None:
+            return None
+        target_areas = target_areas or list(TARGET_AREA_NAMES)
+        return ToolCall(
+            tool_name=target.tool_name,
+            arguments={
+                "target_areas": target_areas,
+                "domains": self._extract_area_audit_domains(text),
+                "include_unavailable": self._contains_any(text, AREA_AUDIT_UNAVAILABLE_HINTS),
+            },
+        )
+
+    def _extract_target_areas(self, text: str) -> list[str]:
+        targets: list[str] = []
+        for area in TARGET_AREA_NAMES:
+            if area in text:
+                targets.append(area)
+        return list(dict.fromkeys(targets))
+
+    def _extract_area_audit_domains(self, text: str) -> list[str]:
+        domains: list[str] = []
+        if LIGHT_CHAR in text or "light" in text or "lights" in text:
+            domains.append("light")
+        if "开关" in text or "switch" in text:
+            domains.append("switch")
+        if CLIMATE_WORD in text or "climate" in text or "air conditioner" in text or "ac" in text:
+            domains.append("climate")
+        if "窗帘" in text or "curtain" in text or "cover" in text:
+            domains.append("cover")
+        if "风扇" in text or "fan" in text:
+            domains.append("fan")
+        if domains:
+            return list(dict.fromkeys(domains))
+        return ["light", "switch", "climate", "cover", "fan"]
+
     def _has_light_on_intent(self, text: str) -> bool:
         if not self._contains_light_reference(text):
             return False
@@ -965,22 +1382,15 @@ class ToolCatalog:
 
     def _detect_area_explicit(self, text: str) -> str | None:
         known = self._known_areas()
-        aliases: dict[str, tuple[str, ...]] = {
-            "living_room": ("\u5ba2\u5385", "\u9910\u5385", "living room", "living_room"),
-            "bedroom": ("\u5367\u5ba4", "\u4e3b\u5367", "bedroom"),
-            "study": ("\u4e66\u623f", "study"),
-            "corridor": ("\u8d70\u5eca", "corridor", "hallway"),
-        }
-
-        for area, words in aliases.items():
+        for area, words in AREA_ALIAS_GROUPS.items():
             if not any(word in text for word in words):
                 continue
             if area in known:
                 return area
-            if area == "corridor":
-                if "living_room" in known:
-                    return "living_room"
-            # Keep trying other aliases first.
+            for fallback in AREA_DETECTION_FALLBACKS.get(area, ()):
+                if fallback in known:
+                    return fallback
+            return area
 
         for area in sorted(known):
             if area and area in text:
@@ -992,6 +1402,7 @@ class ToolCatalog:
             specs = [row for row in self._specs.values() if row.enabled]
 
         areas: set[str] = set()
+        areas.update(AREA_ALIAS_GROUPS.keys())
         for spec in specs:
             default_area = spec.default_arguments.get("area")
             if isinstance(default_area, str) and default_area.strip():
@@ -1023,3 +1434,4 @@ class ToolCatalog:
         if 16 <= value <= 30:
             return value
         return None
+

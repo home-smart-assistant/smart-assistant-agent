@@ -13,6 +13,7 @@ from app.core.config import AppConfig
 from app.core.models import AgentRespondRequest, AgentRespondResponse, PlanStepView, ToolCall
 from app.core.observability import MetricsStore, TraceStore
 from app.core.security import PermissionManager, PromptInjectionGuard
+from app.core.text_codec import normalize_dict, normalize_text
 from app.llm import build_llm_provider
 from app.llm.providers import estimate_message_tokens, estimate_text_tokens
 from app.memory import LongTermMemoryService, ShortTermMemory, build_embedding_provider
@@ -39,34 +40,38 @@ ROUTE_TO_AGENT = {
     FAMILY_SCHEDULE_ROUTE: "family_schedule_agent",
 }
 HOME_AUTOMATION_KEYWORDS = (
-    "\u706f",
+    "灯",
     "lights",
     "light",
-    "\u7a97\u5e18",
+    "区域",
+    "房间",
+    "area",
+    "areas",
+    "窗帘",
     "curtain",
     "scene",
-    "\u573a\u666f",
-    "\u7a7a\u8c03",
+    "场景",
+    "空调",
     "climate",
     "turn on",
     "turn off",
-    "\u6253\u5f00",
-    "\u5173\u95ed",
+    "打开",
+    "关闭",
 )
 DEVICE_MAINTENANCE_KEYWORDS = (
-    "\u79bb\u7ebf",
-    "\u6545\u969c",
-    "\u7535\u6c60",
-    "\u7ef4\u62a4",
-    "\u8bbe\u5907\u72b6\u6001",
+    "离线",
+    "故障",
+    "电池",
+    "维护",
+    "设备状态",
     "offline",
     "maintenance",
 )
 FAMILY_SCHEDULE_KEYWORDS = (
-    "\u65e5\u7a0b",
-    "\u63d0\u9192",
-    "\u95f9\u949f",
-    "\u884c\u7a0b",
+    "日程",
+    "提醒",
+    "闹钟",
+    "行程",
     "schedule",
     "calendar",
     "remind",
@@ -87,6 +92,7 @@ class AgentService:
         self.catalog = ToolCatalog(
             bridge_url=config.ha_bridge_url,
             timeout_seconds=min(config.agent_action_timeout_seconds, 6.0),
+            text_encoding_strict=config.text_encoding_strict,
         )
         self.short_memory = ShortTermMemory(
             max_turns=config.agent_memory_max_turns,
@@ -117,6 +123,7 @@ class AgentService:
             rollback_on_failure=config.agent_rollback_on_failure,
             catalog=self.catalog,
             permission_manager=self.permissions,
+            text_encoding_strict=config.text_encoding_strict,
         )
         self.llm_provider = build_llm_provider(config)
         self.traces = TraceStore(max_items=config.agent_trace_max_items)
@@ -125,14 +132,15 @@ class AgentService:
 
     async def respond(self, req: AgentRespondRequest) -> AgentRespondResponse:
         session_id = req.session_id or uuid.uuid4().hex
-        text = req.text.strip()
+        text = normalize_text(req.text, field_path="text", strict=self.config.text_encoding_strict).strip()
+        metadata = normalize_dict(req.metadata, field_path="metadata", strict=self.config.text_encoding_strict)
         trace_id = uuid.uuid4().hex
-        role = self.permissions.resolve_role(req.metadata)
+        role = self.permissions.resolve_role(metadata)
 
         self.traces.start_trace(trace_id, session_id=session_id, user_text=text)
-        self.traces.add_event(trace_id, "perceive.input", {"role": role, "metadata_keys": sorted(req.metadata.keys())})
+        self.traces.add_event(trace_id, "perceive.input", {"role": role, "metadata_keys": sorted(metadata.keys())})
         self.short_memory.add_turn(session_id, "user", text)
-        await self._remember_turn(session_id, text, {"role": "user", **req.metadata}, trace_id)
+        await self._remember_turn(session_id, text, {"role": "user", **metadata}, trace_id)
 
         blocked, block_reason = self.guard.inspect(text)
         if blocked:
@@ -174,13 +182,13 @@ class AgentService:
         intent_decision, intent_error, intent_prompt_tokens, intent_completion_tokens = await self._decide_intent_route(
             session_id=session_id,
             text=text,
-            metadata=req.metadata,
+            metadata=metadata,
         )
         total_prompt_tokens += intent_prompt_tokens
         total_completion_tokens += intent_completion_tokens
 
         route_agent = ROUTE_TO_AGENT.get(intent_decision.route, "knowledge_agent")
-        user_area = self._resolve_user_area(text, req.metadata)
+        user_area = self._resolve_user_area(text, metadata)
         candidate_limit = max(1, self.config.agent_candidate_tool_limit)
         candidate_tool_names = self.catalog.candidate_tool_names(
             route_agent=route_agent,
@@ -305,7 +313,7 @@ class AgentService:
                 plan.tool_calls,
                 trace_id=trace_id,
                 role=role,
-                metadata=req.metadata,
+                metadata=metadata,
             )
             self._mark_act_step_status(plan, tool_results)
             self.traces.add_event(

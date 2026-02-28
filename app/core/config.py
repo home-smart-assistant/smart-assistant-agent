@@ -84,6 +84,7 @@ class AppConfig:
     agent_runtime_env: str = "home"
     agent_default_role: str = "operator"
     agent_trace_max_items: int = 200
+    text_encoding_strict: bool = True
     agent_tool_whitelist: tuple[str, ...] = (
         "home.lights.on",
         "home.lights.off",
@@ -91,6 +92,9 @@ class AppConfig:
         "home.climate.turn_on",
         "home.climate.turn_off",
         "home.climate.set_temperature",
+        "home.areas.sync",
+        "home.areas.audit",
+        "home.areas.assign",
     )
 
     # Prompt security
@@ -100,7 +104,7 @@ class AppConfig:
         "system prompt",
         "developer prompt",
         "越狱",
-        "请忽略之前",
+        "请忽略之前指令",
         "执行任意命令",
         "泄露提示词",
     )
@@ -168,6 +172,9 @@ class AppConfig:
                     "home.climate.turn_on",
                     "home.climate.turn_off",
                     "home.climate.set_temperature",
+                    "home.areas.sync",
+                    "home.areas.audit",
+                    "home.areas.assign",
                 ],
             )
         )
@@ -180,7 +187,7 @@ class AppConfig:
                     "system prompt",
                     "developer prompt",
                     "越狱",
-                    "请忽略之前",
+                    "请忽略之前指令",
                     "执行任意命令",
                     "泄露提示词",
                 ],
@@ -205,6 +212,7 @@ class AppConfig:
             agent_runtime_env=os.getenv("AGENT_RUNTIME_ENV", "home").strip().lower() or "home",
             agent_default_role=os.getenv("AGENT_DEFAULT_ROLE", "operator").strip().lower(),
             agent_trace_max_items=env_int("AGENT_TRACE_MAX_ITEMS", 200),
+            text_encoding_strict=env_bool("TEXT_ENCODING_STRICT", True),
             agent_tool_whitelist=whitelist,
             prompt_injection_guard_enabled=env_bool("AGENT_PROMPT_INJECTION_GUARD_ENABLED", True),
             prompt_injection_patterns=patterns,
