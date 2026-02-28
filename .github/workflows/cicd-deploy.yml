@@ -14,25 +14,22 @@ env:
 
 jobs:
   build:
-    runs-on: [self-hosted, Windows, X64, builder-win]
+    runs-on: [self-hosted, Linux, X64, deploy-linux]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Login to GHCR
-        shell: powershell
         run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build image
-        shell: powershell
         run: |
-          docker build -f Dockerfile -t "${env:IMAGE_NAME}:main" -t "${env:IMAGE_NAME}:${{ github.sha }}" .
+          docker build -f Dockerfile -t "${IMAGE_NAME}:main" -t "${IMAGE_NAME}:${{ github.sha }}" .
 
       - name: Push image
-        shell: powershell
         run: |
-          docker push "${env:IMAGE_NAME}:main"
-          docker push "${env:IMAGE_NAME}:${{ github.sha }}"
+          docker push "${IMAGE_NAME}:main"
+          docker push "${IMAGE_NAME}:${{ github.sha }}"
 
   deploy:
     runs-on: [self-hosted, Linux, X64, deploy-linux]
