@@ -1,56 +1,29 @@
-﻿openapi: 3.0.3
+openapi: 3.0.3
 info:
   title: Smart Assistant Agent API
-  version: 0.1.0
+  version: 0.4.0
 servers:
   - url: http://localhost:8091
 paths:
-  /health:
-    get:
-      summary: Agent health
-      responses:
-        '200':
-          description: OK
   /v1/agent/respond:
     post:
-      summary: Generate response and optional tool call
+      summary: Main agent entry with planning-action-feedback
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [text]
-              properties:
-                session_id:
-                  type: string
-                text:
-                  type: string
-                metadata:
-                  type: object
-                  additionalProperties: true
+              $ref: '#/components/schemas/AgentRespondRequest'
       responses:
         '200':
           description: Agent response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  session_id:
-                    type: string
-                  reply_text:
-                    type: string
-                  source:
-                    type: string
-                  tool_call:
-                    $ref: '#/components/schemas/ToolCall'
-                  tool_result:
-                    type: object
-                    additionalProperties: true
+                $ref: '#/components/schemas/AgentRespondResponse'
   /v1/agent/session/{session_id}:
     get:
-      summary: Query session memory
+      summary: Query session short-term memory
       parameters:
         - in: path
           name: session_id
@@ -60,6 +33,22 @@ paths:
       responses:
         '200':
           description: Memory list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  turns:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        role:
+                          type: string
+                        content:
+                          type: string
     delete:
       summary: Clear session memory
       parameters:
@@ -71,6 +60,113 @@ paths:
       responses:
         '200':
           description: Cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  cleared:
+                    type: boolean
+  /v1/agent/context/ha:
+    get:
+      summary: Query cached HA context from HA Bridge
+      parameters:
+        - in: query
+          name: force_refresh
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: HA context payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  from_cache:
+                    type: boolean
+                  error:
+                    type: string
+                    nullable: true
+                  data:
+                    type: object
+                    nullable: true
+                    additionalProperties: true
+  /v1/agent/tools:
+    get:
+      summary: List tool catalog
+      responses:
+        '200':
+          description: Tool catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /v1/agent/trace/{trace_id}:
+    get:
+      summary: Query a single trace
+      parameters:
+        - in: path
+          name: trace_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Trace detail
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Trace not found
+  /v1/agent/traces:
+    get:
+      summary: Query latest traces
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: Trace list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /v1/agent/metrics:
+    get:
+      summary: Query runtime metrics
+      responses:
+        '200':
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
 components:
   schemas:
     ToolCall:
@@ -79,5 +175,60 @@ components:
         tool_name:
           type: string
         arguments:
+          type: object
+          additionalProperties: true
+    PlanStep:
+      type: object
+      properties:
+        step_id:
+          type: integer
+        stage:
+          type: string
+        summary:
+          type: string
+        tool_name:
+          type: string
+          nullable: true
+        status:
+          type: string
+    AgentRespondRequest:
+      type: object
+      required: [text]
+      properties:
+        session_id:
+          type: string
+        text:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+    AgentRespondResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+        reply_text:
+          type: string
+        source:
+          type: string
+        trace_id:
+          type: string
+          nullable: true
+        tool_call:
+          $ref: '#/components/schemas/ToolCall'
+        tool_result:
+          type: object
+          additionalProperties: true
+          nullable: true
+        tool_results:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        plan:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanStep'
+        security:
           type: object
           additionalProperties: true

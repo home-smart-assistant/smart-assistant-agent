@@ -4,3 +4,6 @@
 .env
 .idea/
 .vscode/
+run_logs/
+data/
+*.log
