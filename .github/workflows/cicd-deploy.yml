@@ -1,0 +1,102 @@
+name: Agent CI/CD
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/home-smart-assistant/smart-assistant-agent
+
+jobs:
+  build:
+    runs-on: [self-hosted, Windows, X64, builder-win]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Login to GHCR
+        shell: pwsh
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build image
+        shell: pwsh
+        run: |
+          docker build -f Dockerfile -t "${env:IMAGE_NAME}:main" -t "${env:IMAGE_NAME}:${{ github.sha }}" .
+
+      - name: Push image
+        shell: pwsh
+        run: |
+          docker push "${env:IMAGE_NAME}:main"
+          docker push "${env:IMAGE_NAME}:${{ github.sha }}"
+
+  deploy:
+    runs-on: [self-hosted, Linux, X64, deploy-linux]
+    needs: build
+    if: ${{ github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Login to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Deploy service on self-hosted runner
+        env:
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          IMAGE_TAG: ${{ github.sha }}
+          SERVICE_NAME: smart_assistant_agent
+          SERVICE_TAG_KEY: AGENT_IMAGE_TAG
+          HEALTH_URL: http://127.0.0.1:8091/v1/agent/metrics
+        run: |
+          set -euo pipefail
+          DEPLOY_PATH="${DEPLOY_PATH:-/opt/smart-assistant}"
+          mkdir -p "$DEPLOY_PATH"
+          cd "$DEPLOY_PATH"
+
+          curl -fsSL https://raw.githubusercontent.com/home-smart-assistant/smart-assistant-gateway/main/deploy/prod/docker-compose.yml -o docker-compose.yml
+          if [ ! -f .env ]; then
+            curl -fsSL https://raw.githubusercontent.com/home-smart-assistant/smart-assistant-gateway/main/deploy/prod/.env.example -o .env
+            echo "Created $DEPLOY_PATH/.env from template. Fill required values and rerun."
+            exit 1
+          fi
+
+          set_env() {
+            key="$1"
+            value="$2"
+            if grep -q "^${key}=" .env; then
+              sed -i "s#^${key}=.*#${key}=${value}#g" .env
+            else
+              echo "${key}=${value}" >> .env
+            fi
+          }
+          set_env "$SERVICE_TAG_KEY" "$IMAGE_TAG"
+
+          docker compose pull "$SERVICE_NAME"
+          docker compose up -d --no-deps "$SERVICE_NAME"
+
+          for i in $(seq 1 20); do
+            if curl -fsS "$HEALTH_URL" >/dev/null; then
+              echo "Health check passed: $HEALTH_URL"
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "Health check failed: $HEALTH_URL"
+          docker compose logs --tail=200 "$SERVICE_NAME"
+          exit 1

@@ -62,3 +62,17 @@ uvicorn app.main:app --host 0.0.0.0 --port 8091
 - All source files and docs use UTF-8.
 - Before routing/execution, request text and metadata are normalized to repair common mojibake.
 - If text cannot be repaired reliably and `TEXT_ENCODING_STRICT=true`, API returns `400` with `error_code=invalid_text_encoding`.
+
+## CI/CD (Deploy to 192.168.3.103)
+- Workflow: `.github/workflows/cicd-deploy.yml`
+- Trigger: push to `main` or manual `workflow_dispatch`
+- Output image:
+  - `ghcr.io/home-smart-assistant/smart-assistant-agent:main`
+  - `ghcr.io/home-smart-assistant/smart-assistant-agent:<commit_sha>`
+- Deploy target service: `smart_assistant_agent` in `/opt/smart-assistant/docker-compose.yml`
+- Runner labels:
+  - Build: `[self-hosted, Windows, X64, builder-win]` (recommended on `192.168.3.11`)
+  - Deploy: `[self-hosted, Linux, X64, deploy-linux]` (recommended on `192.168.3.103`)
+- Optional config:
+  - Repository variable `DEPLOY_PATH` (default `/opt/smart-assistant`)
+  - `GHCR_USERNAME` + `GHCR_TOKEN` only if your package policy requires explicit login
