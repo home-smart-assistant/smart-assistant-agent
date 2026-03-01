@@ -70,7 +70,7 @@
       gap: 8px;
     }
 
-    button, input, textarea {
+    button, input, textarea, select {
       font: inherit;
       color: inherit;
     }
@@ -183,7 +183,7 @@
     .settings {
       display: grid;
       gap: 8px;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
     }
 
     .settings label {
@@ -193,7 +193,8 @@
       gap: 4px;
     }
 
-    .settings input {
+    .settings input,
+    .settings select {
       border: 1px solid var(--border);
       border-radius: 8px;
       background: #121722;
@@ -250,6 +251,15 @@
           Home ID
           <input id="home-id" placeholder="home-1" />
         </label>
+        <label>
+          LLM Model
+          <input id="model-name" list="model-options" placeholder="default model from server" />
+          <datalist id="model-options"></datalist>
+        </label>
+        <label>
+          Timeout (s)
+          <input id="request-timeout" type="number" min="3" max="120" step="1" value="25" />
+        </label>
       </div>
 
       <div class="row">
@@ -270,6 +280,9 @@
     const sessionIdEl = document.getElementById("session-id");
     const deviceIdEl = document.getElementById("device-id");
     const homeIdEl = document.getElementById("home-id");
+    const modelNameEl = document.getElementById("model-name");
+    const modelOptionsEl = document.getElementById("model-options");
+    const requestTimeoutEl = document.getElementById("request-timeout");
     const sendBtn = document.getElementById("btn-send");
     const newSessionBtn = document.getElementById("btn-new-session");
     const clearBtn = document.getElementById("btn-clear");
@@ -312,8 +325,10 @@
       const metadata = {};
       const deviceId = deviceIdEl.value.trim();
       const homeId = homeIdEl.value.trim();
+      const modelName = modelNameEl.value.trim();
       if (deviceId) metadata.device_id = deviceId;
       if (homeId) metadata.home_id = homeId;
+      if (modelName) metadata.llm_model = modelName;
 
       const payload = {
         text,
@@ -339,15 +354,20 @@
       promptEl.value = "";
 
       const pending = appendSystem("Agent is thinking...");
+      const timeoutSeconds = Math.max(3, Number(requestTimeoutEl.value || 25));
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
 
       try {
         const resp = await fetch("/v1/agent/respond", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
+          signal: controller.signal,
         });
 
         pending.remove();
+        clearTimeout(timer);
 
         if (!resp.ok) {
           let detail = null;
@@ -389,12 +409,43 @@
         appendMessage("assistant", replyText, details);
       } catch (err) {
         pending.remove();
-        appendMessage("error", "Network error", { message: String(err) });
+        clearTimeout(timer);
+        if (err && err.name === "AbortError") {
+          appendMessage("error", "Request timeout", {
+            error_code: "request_timeout",
+            timeout_seconds: timeoutSeconds,
+            hint: "Try a smaller model or increase timeout.",
+          });
+        } else {
+          appendMessage("error", "Network error", { message: String(err) });
+        }
       } finally {
         inFlight = false;
         sendBtn.disabled = false;
         promptEl.disabled = false;
         promptEl.focus();
+      }
+    }
+
+    async function loadModels() {
+      try {
+        const resp = await fetch("/v1/agent/models");
+        if (!resp.ok) {
+          return;
+        }
+        const data = await resp.json();
+        const models = Array.isArray(data.models) ? data.models : [];
+        modelOptionsEl.innerHTML = "";
+        for (const name of models) {
+          const opt = document.createElement("option");
+          opt.value = name;
+          modelOptionsEl.appendChild(opt);
+        }
+        if (!modelNameEl.value && data.default_model) {
+          modelNameEl.value = data.default_model;
+        }
+      } catch (_) {
+        // Keep UI usable even if model discovery fails.
       }
     }
 
@@ -417,6 +468,7 @@
       appendSystem("Chat cleared.");
     });
 
+    loadModels();
     appendSystem("Ready. Send a message to call /v1/agent/respond.");
   </script>
 </body>

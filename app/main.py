@@ -71,3 +71,8 @@ async def list_traces(limit: int = 20) -> dict[str, Any]:
 @app.get("/v1/agent/metrics")
 async def get_metrics() -> dict[str, Any]:
     return service.metrics_snapshot()
+
+
+@app.get("/v1/agent/models")
+async def get_models() -> dict[str, Any]:
+    return await service.list_models()

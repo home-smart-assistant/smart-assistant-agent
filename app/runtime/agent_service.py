@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from app.action import ActionExecutor
 from app.context import HaContextService
 from app.core.config import AppConfig
@@ -134,11 +136,22 @@ class AgentService:
         session_id = req.session_id or uuid.uuid4().hex
         text = normalize_text(req.text, field_path="text", strict=self.config.text_encoding_strict).strip()
         metadata = normalize_dict(req.metadata, field_path="metadata", strict=self.config.text_encoding_strict)
+        model_override = self._resolve_model_override(metadata)
+        active_model = model_override or self.config.llm_model
         trace_id = uuid.uuid4().hex
         role = self.permissions.resolve_role(metadata)
 
         self.traces.start_trace(trace_id, session_id=session_id, user_text=text)
-        self.traces.add_event(trace_id, "perceive.input", {"role": role, "metadata_keys": sorted(metadata.keys())})
+        self.traces.add_event(
+            trace_id,
+            "perceive.input",
+            {
+                "role": role,
+                "metadata_keys": sorted(metadata.keys()),
+                "llm_model": active_model,
+                "llm_model_override": bool(model_override),
+            },
+        )
         self.short_memory.add_turn(session_id, "user", text)
         await self._remember_turn(session_id, text, {"role": "user", **metadata}, trace_id)
 
@@ -183,6 +196,7 @@ class AgentService:
             session_id=session_id,
             text=text,
             metadata=metadata,
+            model_override=model_override,
         )
         total_prompt_tokens += intent_prompt_tokens
         total_completion_tokens += intent_completion_tokens
@@ -236,6 +250,7 @@ class AgentService:
                 recalled_snippets=recalled_snippets,
                 candidate_tool_schemas=candidate_tool_schemas,
                 allowed_tool_names=candidate_tool_names,
+                model_override=model_override,
             )
             total_prompt_tokens += prompt_used
             total_completion_tokens += completion_used
@@ -335,6 +350,7 @@ class AgentService:
                 recalled_snippets=recalled_snippets,
                 plan=plan,
                 tool_results=tool_results,
+                model_override=model_override,
             )
             total_prompt_tokens += prompt_used
             total_completion_tokens += completion_used
@@ -357,6 +373,7 @@ class AgentService:
                     recalled_snippets=recalled_snippets,
                     plan=plan,
                     tool_results=tool_results,
+                    model_override=model_override,
                 )
                 total_prompt_tokens += prompt_used
                 total_completion_tokens += completion_used
@@ -416,6 +433,9 @@ class AgentService:
                 "route_confidence": round(intent_decision.confidence, 4),
                 "route_agent": route_agent,
                 "candidate_tools": candidate_tool_names,
+                "llm_model": active_model,
+                "llm_model_override": bool(model_override),
+                "llm_error": llm_error,
             },
         )
 
@@ -442,6 +462,42 @@ class AgentService:
 
     def tool_catalog(self) -> list[dict[str, Any]]:
         return self.catalog.list_catalog()
+
+    async def list_models(self) -> dict[str, Any]:
+        models: list[str] = []
+        default_model = self.config.llm_model
+        if default_model:
+            models.append(default_model)
+
+        error: str | None = None
+        if self.config.llm_enabled and self.config.llm_provider == "ollama":
+            try:
+                timeout_seconds = min(max(self.config.llm_timeout_seconds, 3.0), 8.0)
+                async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                    resp = await client.get(f"{self.config.ollama_base_url}/api/tags")
+                    if resp.status_code >= 400:
+                        error = f"ollama_status_{resp.status_code}"
+                    else:
+                        payload = resp.json()
+                        raw_models = payload.get("models") if isinstance(payload, dict) else None
+                        if isinstance(raw_models, list):
+                            for row in raw_models:
+                                if not isinstance(row, dict):
+                                    continue
+                                name = str(row.get("name", "")).strip()
+                                if name:
+                                    models.append(name)
+            except Exception as ex:
+                error = f"ollama_unreachable: {ex}"
+
+        deduped = sorted({item for item in models if item})
+        return {
+            "enabled": bool(self.llm_provider),
+            "provider": self.config.llm_provider,
+            "default_model": default_model,
+            "models": deduped,
+            "error": error,
+        }
 
     def health(self) -> dict[str, Any]:
         return {
@@ -490,6 +546,7 @@ class AgentService:
         recalled_snippets: list[str],
         candidate_tool_schemas: list[dict[str, Any]],
         allowed_tool_names: list[str],
+        model_override: str | None = None,
     ) -> tuple[list[ToolCall], str | None, str | None, int, int]:
         if not self.llm_provider:
             return [], None, "llm_disabled", 0, 0
@@ -499,7 +556,7 @@ class AgentService:
             ha_context=ha_context,
             recalled_snippets=recalled_snippets,
         )
-        response = await self.llm_provider.chat(messages, tools=candidate_tool_schemas)
+        response = await self.llm_provider.chat(messages, tools=candidate_tool_schemas, model=model_override)
         prompt_tokens, completion_tokens = self._token_usage_from_response(messages, response)
         if response.error:
             return [], None, response.error, prompt_tokens, 0
@@ -521,6 +578,7 @@ class AgentService:
         session_id: str,
         text: str,
         metadata: dict[str, Any],
+        model_override: str | None = None,
     ) -> tuple[IntentRouteDecision, str | None, int, int]:
         rule_decision = self._rule_route_decision(text, metadata)
         if not self.config.agent_use_llm_intent_router or not self.llm_provider:
@@ -529,6 +587,7 @@ class AgentService:
         llm_decision, llm_error, prompt_tokens, completion_tokens = await self._classify_route_with_llm(
             session_id=session_id,
             text=text,
+            model_override=model_override,
         )
         if llm_decision is None:
             return rule_decision, llm_error, prompt_tokens, completion_tokens
@@ -608,6 +667,7 @@ class AgentService:
         self,
         session_id: str,
         text: str,
+        model_override: str | None = None,
     ) -> tuple[IntentRouteDecision | None, str | None, int, int]:
         if not self.llm_provider:
             return None, "llm_disabled", 0, 0
@@ -629,7 +689,7 @@ class AgentService:
             messages.append({"role": turn.role, "content": turn.content})
         messages.append({"role": "user", "content": text})
 
-        response = await self.llm_provider.chat(messages)
+        response = await self.llm_provider.chat(messages, model=model_override)
         prompt_tokens, completion_tokens = self._token_usage_from_response(messages, response)
         if response.error:
             return None, response.error, prompt_tokens, 0
@@ -688,6 +748,7 @@ class AgentService:
         recalled_snippets: list[str],
         plan: AgentPlan,
         tool_results: list[dict[str, Any]],
+        model_override: str | None = None,
     ) -> tuple[str | None, str | None, int, int]:
         if not self.llm_provider:
             return None, "llm_disabled", 0, 0
@@ -699,7 +760,7 @@ class AgentService:
             plan=plan,
             tool_results=tool_results,
         )
-        response = await self.llm_provider.chat(messages)
+        response = await self.llm_provider.chat(messages, model=model_override)
         prompt_tokens, completion_tokens = self._token_usage_from_response(messages, response)
         if response.error:
             return None, response.error, prompt_tokens, 0
@@ -878,6 +939,16 @@ class AgentService:
             f"Executed {len(direct_results)} actions, succeeded {len(success_rows)}, "
             f"failed {len(failed_rows)} ({failed_names})."
         )
+
+    def _resolve_model_override(self, metadata: dict[str, Any]) -> str | None:
+        for key in ("llm_model", "llm_model_override"):
+            raw = metadata.get(key)
+            if not isinstance(raw, str):
+                continue
+            value = raw.strip()
+            if value:
+                return value
+        return None
 
     def _fallback_chat_reply(self, session_id: str, text: str) -> str:
         turns = len(self.short_memory.get_session(session_id))

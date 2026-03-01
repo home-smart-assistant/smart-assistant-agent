@@ -47,6 +47,7 @@ class LlmProvider(ABC):
         self,
         messages: list[dict[str, str]],
         tools: list[dict[str, object]] | None = None,
+        model: str | None = None,
     ) -> LlmResponse:
         raise NotImplementedError
 
@@ -73,9 +74,11 @@ class OllamaProvider(LlmProvider):
         self,
         messages: list[dict[str, str]],
         tools: list[dict[str, object]] | None = None,
+        model: str | None = None,
     ) -> LlmResponse:
+        selected_model = (model or self.model).strip() or self.model
         payload = {
-            "model": self.model,
+            "model": selected_model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": self.temperature},
@@ -152,9 +155,11 @@ class OpenAiCompatibleProvider(LlmProvider):
         self,
         messages: list[dict[str, str]],
         tools: list[dict[str, object]] | None = None,
+        model: str | None = None,
     ) -> LlmResponse:
+        selected_model = (model or self.model).strip() or self.model
         payload = {
-            "model": self.model,
+            "model": selected_model,
             "messages": messages,
             "temperature": self.temperature,
         }
