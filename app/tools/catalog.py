@@ -1007,12 +1007,12 @@ class ToolCatalog:
                 strategy=spec.strategy,
                 area=user_area,
             )
-            if from_context is not None:
-                if not from_context:
-                    return False
+            if from_context:
                 target_entities = from_context
 
         if not target_entities:
+            # No explicit mapping for this area in catalog/context; keep candidate and let bridge
+            # resolve entities from HA area metadata at execution time.
             return True
         if not isinstance(states, dict) or not states:
             return True
@@ -1036,16 +1036,9 @@ class ToolCatalog:
         if not isinstance(entity_map, dict):
             return None
 
-        parsed = self._parse_entity_ids(entity_map.get(area))
-        if parsed:
-            return parsed
-
-        fallback = self._parse_entity_ids(entity_map.get("living_room"))
-        if fallback:
-            return fallback
-
-        # Context explicitly has no entities for this type.
-        return []
+        if area not in entity_map:
+            return None
+        return self._parse_entity_ids(entity_map.get(area))
 
     def _entity_type_for_strategy(self, strategy: str) -> str | None:
         mapping = {
@@ -1061,8 +1054,6 @@ class ToolCatalog:
         if not isinstance(area_map, dict):
             return []
         raw = area_map.get(area)
-        if raw is None:
-            raw = area_map.get("living_room")
         return self._parse_entity_ids(raw)
 
     def _parse_entity_ids(self, raw: Any) -> list[str]:
