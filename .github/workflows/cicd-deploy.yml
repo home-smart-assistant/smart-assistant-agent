@@ -40,12 +40,35 @@ jobs:
     needs: build
     if: ${{ github.ref == 'refs/heads/main' }}
     steps:
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+      - name: Login to GHCR (retry)
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          retry() {
+            local attempts="$1"
+            local delay_seconds="$2"
+            shift 2
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge "$attempts" ]; then
+                echo "Command failed after ${attempts} attempts: $*"
+                return 1
+              fi
+              echo "Attempt ${n}/${attempts} failed: $*"
+              sleep "$delay_seconds"
+              n=$((n + 1))
+            done
+          }
+
+          login_ghcr() {
+            docker logout ghcr.io >/dev/null 2>&1 || true
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          }
+
+          retry 5 6 login_ghcr
 
       - name: Deploy service on self-hosted runner
         env:
@@ -56,13 +79,32 @@ jobs:
           HEALTH_URL: http://127.0.0.1:8091/v1/agent/metrics
         run: |
           set -euo pipefail
+          export DOCKER_CLIENT_TIMEOUT=180
+          export COMPOSE_HTTP_TIMEOUT=180
+
+          retry() {
+            local attempts="$1"
+            local delay_seconds="$2"
+            shift 2
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge "$attempts" ]; then
+                echo "Command failed after ${attempts} attempts: $*"
+                return 1
+              fi
+              echo "Attempt ${n}/${attempts} failed: $*"
+              sleep "$delay_seconds"
+              n=$((n + 1))
+            done
+          }
+
           DEPLOY_PATH="${DEPLOY_PATH:-/opt/smart-assistant}"
           mkdir -p "$DEPLOY_PATH"
           cd "$DEPLOY_PATH"
 
-          curl -fsSL https://raw.githubusercontent.com/home-smart-assistant/smart-assistant-gateway/main/deploy/prod/docker-compose.yml -o docker-compose.yml
+          retry 5 4 curl -fsSL https://raw.githubusercontent.com/home-smart-assistant/smart-assistant-gateway/main/deploy/prod/docker-compose.yml -o docker-compose.yml
           if [ ! -f .env ]; then
-            curl -fsSL https://raw.githubusercontent.com/home-smart-assistant/smart-assistant-gateway/main/deploy/prod/.env.example -o .env
+            retry 5 4 curl -fsSL https://raw.githubusercontent.com/home-smart-assistant/smart-assistant-gateway/main/deploy/prod/.env.example -o .env
             echo "Created $DEPLOY_PATH/.env from template. Fill required values and rerun."
             exit 1
           fi
@@ -78,8 +120,8 @@ jobs:
           }
           set_env "$SERVICE_TAG_KEY" "$IMAGE_TAG"
 
-          docker compose pull "$SERVICE_NAME"
-          docker compose up -d --no-deps "$SERVICE_NAME"
+          retry 6 8 docker compose pull "$SERVICE_NAME"
+          retry 3 5 docker compose up -d --no-deps "$SERVICE_NAME"
 
           for i in $(seq 1 20); do
             if curl -fsS "$HEALTH_URL" >/dev/null; then
