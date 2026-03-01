@@ -14,7 +14,7 @@ env:
 
 jobs:
   build:
-    runs-on: [self-hosted, Linux, X64, deploy-linux]
+    runs-on: [self-hosted, Linux, X64, builder-linux-11]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
