@@ -3,7 +3,7 @@
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.txt
 RUN mkdir -p /app/data/memory
 
 COPY app ./app
