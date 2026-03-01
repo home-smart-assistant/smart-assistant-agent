@@ -405,23 +405,9 @@ class AgentService:
                     continue
                 self.metrics.record_tool(str(row.get("tool_name", "unknown")), bool(row.get("success")))
 
-            llm_reply, llm_error_next, prompt_used, completion_used = await self._chat_with_llm(
-                session_id=session_id,
-                ha_context=ha_context,
-                recalled_snippets=recalled_snippets,
-                plan=plan,
-                tool_results=tool_results,
-                model_override=model_override,
-            )
-            total_prompt_tokens += prompt_used
-            total_completion_tokens += completion_used
-            if llm_reply:
-                reply_text = llm_reply
-                source = f"{self.llm_provider.name}_chat" if self.llm_provider else "rule_tool"
-            else:
-                reply_text = self._render_tool_reply(tool_results)
-                source = "rule_tool"
-            llm_error = llm_error_next or llm_error
+            # Tool execution responses stay deterministic and fast; skip post-action LLM summarization.
+            reply_text = self._render_tool_reply(tool_results)
+            source = "rule_tool"
 
         if reply_text is None:
             if router_text:
