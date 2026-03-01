@@ -87,6 +87,12 @@ ALL_SCOPE_HINTS = (
     "entire home",
     "entire house",
 )
+EXCEPT_SCOPE_HINTS = (
+    "except",
+    "but not",
+    "excluding",
+    "exclude",
+)
 LEAVE_HOME_HINTS = (
     "离开",
     "出门",
@@ -585,6 +591,8 @@ class ToolCatalog:
         lower = normalized.lower()
         explicit_area = self._detect_area_explicit(lower)
         area = explicit_area or self._default_area()
+        excluded_areas = self._extract_excluded_areas(lower)
+        all_scope_requested = self._is_all_scope_requested(lower)
         all_scope_without_area = explicit_area is None and self._is_all_scope_requested(lower)
 
         area_sync_call = self._detect_area_sync_tool_call(lower)
@@ -600,18 +608,27 @@ class ToolCatalog:
         if self._has_light_off_intent(lower):
             target = self._find_light_tool(service="turn_off")
             if target:
-                action_area = "all" if all_scope_without_area else area
-                return ToolCall(tool_name=target.tool_name, arguments={"area": action_area})
+                action_area = "all" if (all_scope_without_area or (all_scope_requested and excluded_areas)) else area
+                args: dict[str, Any] = {"area": action_area}
+                if action_area == "all" and excluded_areas:
+                    args["exclude_areas"] = excluded_areas
+                return ToolCall(tool_name=target.tool_name, arguments=args)
         if self._has_leave_home_light_off_intent(lower):
             target = self._find_light_tool(service="turn_off")
             if target:
-                action_area = "all" if all_scope_without_area else area
-                return ToolCall(tool_name=target.tool_name, arguments={"area": action_area})
+                action_area = "all" if (all_scope_without_area or (all_scope_requested and excluded_areas)) else area
+                args: dict[str, Any] = {"area": action_area}
+                if action_area == "all" and excluded_areas:
+                    args["exclude_areas"] = excluded_areas
+                return ToolCall(tool_name=target.tool_name, arguments=args)
         if self._has_light_on_intent(lower):
             target = self._find_light_tool(service="turn_on")
             if target:
-                action_area = "all" if all_scope_without_area else area
-                return ToolCall(tool_name=target.tool_name, arguments={"area": action_area})
+                action_area = "all" if (all_scope_without_area or (all_scope_requested and excluded_areas)) else area
+                args: dict[str, Any] = {"area": action_area}
+                if action_area == "all" and excluded_areas:
+                    args["exclude_areas"] = excluded_areas
+                return ToolCall(tool_name=target.tool_name, arguments=args)
 
         if SCENE_CINEMA_WORD in lower or SCENE_HOME_WORD in lower or SCENE_GOOD_NIGHT_WORD in lower:
             target = self._find_scene_tool()
@@ -1019,7 +1036,6 @@ class ToolCatalog:
             return True
         if not isinstance(ha_context, dict):
             return True
-        states = ha_context.get("entity_states")
         known_entities = ha_context.get("known_entities")
         target_entities = self._extract_entity_ids_for_area(spec.default_arguments, user_area)
         if not target_entities:
@@ -1035,9 +1051,9 @@ class ToolCatalog:
             # No explicit mapping for this area in catalog/context; keep candidate and let bridge
             # resolve entities from HA area metadata at execution time.
             return True
-        if not isinstance(states, dict) or not states:
-            return True
-        return any(self._entity_available(states.get(entity_id)) for entity_id in target_entities)
+        # Keep action tools visible even if mapped entities look unavailable in context.
+        # Runtime execution resolves entities from HA dynamically and is more reliable.
+        return True
 
     def _extract_context_entity_ids(
         self,
@@ -1379,6 +1395,33 @@ class ToolCatalog:
         if self._contains_any(text, ALL_SCOPE_HINTS):
             return True
         return bool(re.search(r"\ball\b", text))
+
+    def _extract_excluded_areas(self, text: str) -> list[str]:
+        segments: list[str] = []
+        zh = re.search(r"(?:除(?:了)?)(.+?)(?:之外|外)", text)
+        if zh:
+            segment = str(zh.group(1)).strip()
+            if segment:
+                segments.append(segment)
+
+        en = re.search(r"(?:except|but not|excluding|exclude)\s+(.+)", text)
+        if en:
+            segment = str(en.group(1)).strip()
+            if segment:
+                segments.append(segment)
+
+        if not segments and not self._contains_any(text, EXCEPT_SCOPE_HINTS):
+            return []
+
+        excluded: list[str] = []
+        for segment in segments or [text]:
+            for area, aliases in AREA_ALIAS_GROUPS.items():
+                if any(alias in segment for alias in aliases):
+                    excluded.append(area)
+            explicit = self._detect_area_explicit(segment)
+            if explicit:
+                excluded.append(explicit)
+        return list(dict.fromkeys(excluded))
 
     def _contains_light_reference(self, text: str) -> bool:
         return LIGHT_CHAR in text or "light" in text or "lights" in text
