@@ -183,7 +183,7 @@
     .settings {
       display: grid;
       gap: 8px;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
     }
 
     .settings label {
@@ -252,6 +252,13 @@
           <input id="home-id" placeholder="home-1" />
         </label>
         <label>
+          Mode
+          <select id="interaction-mode">
+            <option value="agent" selected>agent</option>
+            <option value="chat">chat</option>
+          </select>
+        </label>
+        <label>
           LLM Model
           <input id="model-name" list="model-options" placeholder="default model from server" />
           <datalist id="model-options"></datalist>
@@ -268,6 +275,7 @@
       </div>
 
       <div class="hint">
+        Mode `agent` can execute tools; mode `chat` is conversation only.
         Response details (trace/tool/plan) are shown under assistant messages.
         If request fails, error details are shown as a red message.
       </div>
@@ -280,6 +288,7 @@
     const sessionIdEl = document.getElementById("session-id");
     const deviceIdEl = document.getElementById("device-id");
     const homeIdEl = document.getElementById("home-id");
+    const interactionModeEl = document.getElementById("interaction-mode");
     const modelNameEl = document.getElementById("model-name");
     const modelOptionsEl = document.getElementById("model-options");
     const requestTimeoutEl = document.getElementById("request-timeout");
@@ -325,9 +334,11 @@
       const metadata = {};
       const deviceId = deviceIdEl.value.trim();
       const homeId = homeIdEl.value.trim();
+      const interactionMode = interactionModeEl.value.trim() || "agent";
       const modelName = modelNameEl.value.trim();
       if (deviceId) metadata.device_id = deviceId;
       if (homeId) metadata.home_id = homeId;
+      metadata.interaction_mode = interactionMode;
       if (modelName) metadata.llm_model = modelName;
 
       const payload = {

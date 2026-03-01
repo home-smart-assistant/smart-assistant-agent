@@ -36,6 +36,7 @@ FastAPI-based smart home agent with a non-framework loop:
 - `GET /v1/agent/metrics`
 - `GET /v1/agent/models`
 - `GET /ui` (lightweight ChatGPT-style web chat UI for calling `/v1/agent/respond`)
+  - UI supports `mode=agent|chat` (default `agent`), and optional per-request `metadata.llm_model`.
 
 ## Long-term Memory (FAISS fixed)
 - No vector DB backend switching

@@ -29,6 +29,8 @@ HOME_AUTOMATION_ROUTE = "home_automation"
 KNOWLEDGE_QA_ROUTE = "knowledge_qa"
 DEVICE_MAINTENANCE_ROUTE = "device_maintenance"
 FAMILY_SCHEDULE_ROUTE = "family_schedule"
+INTERACTION_MODE_AGENT = "agent"
+INTERACTION_MODE_CHAT = "chat"
 ROUTE_LABELS = {
     HOME_AUTOMATION_ROUTE,
     KNOWLEDGE_QA_ROUTE,
@@ -138,6 +140,7 @@ class AgentService:
         metadata = normalize_dict(req.metadata, field_path="metadata", strict=self.config.text_encoding_strict)
         model_override = self._resolve_model_override(metadata)
         active_model = model_override or self.config.llm_model
+        interaction_mode = self._resolve_interaction_mode(metadata)
         trace_id = uuid.uuid4().hex
         role = self.permissions.resolve_role(metadata)
 
@@ -150,6 +153,7 @@ class AgentService:
                 "metadata_keys": sorted(metadata.keys()),
                 "llm_model": active_model,
                 "llm_model_override": bool(model_override),
+                "interaction_mode": interaction_mode,
             },
         )
         self.short_memory.add_turn(session_id, "user", text)
@@ -184,6 +188,63 @@ class AgentService:
 
         recalled_docs = await self._recall_memory(session_id, text, trace_id)
         recalled_snippets = [doc.text for doc in recalled_docs]
+
+        if interaction_mode == INTERACTION_MODE_CHAT:
+            plan = self._build_chat_mode_plan()
+            llm_reply, llm_error, prompt_used, completion_used = await self._chat_with_llm(
+                session_id=session_id,
+                ha_context=ha_context,
+                recalled_snippets=recalled_snippets,
+                plan=plan,
+                tool_results=[],
+                model_override=model_override,
+            )
+
+            if prompt_used > 0 or completion_used > 0:
+                self.metrics.record_tokens(prompt_tokens=prompt_used, completion_tokens=completion_used)
+                self.traces.add_event(
+                    trace_id,
+                    "llm.tokens",
+                    {"prompt_tokens": prompt_used, "completion_tokens": completion_used},
+                )
+
+            if llm_error:
+                self.metrics.record_error()
+                self.traces.add_event(trace_id, "llm.error", {"error": llm_error})
+
+            reply_text = llm_reply or self._fallback_chat_reply(session_id, text)
+            source = f"{self.llm_provider.name}_chat" if llm_reply and self.llm_provider else "rule_chat"
+
+            self._mark_feedback_step_completed(plan)
+            self.short_memory.add_turn(session_id, "assistant", reply_text)
+            await self._remember_turn(session_id, reply_text, {"role": "assistant"}, trace_id)
+
+            self.metrics.record_request(source)
+            final_error = llm_error or (context_error if context_error not in {None, "disabled"} else None)
+            self.traces.finish_trace(trace_id, source=source, error=final_error)
+            return AgentRespondResponse(
+                session_id=session_id,
+                reply_text=reply_text,
+                source=source,
+                trace_id=trace_id,
+                tool_call=None,
+                tool_result=None,
+                tool_results=[],
+                plan=[self._to_plan_view(step) for step in plan.steps],
+                security={
+                    "blocked": False,
+                    "role": role,
+                    "context_error": context_error,
+                    "route": "chat_only",
+                    "route_confidence": 1.0,
+                    "route_agent": "chat_mode",
+                    "candidate_tools": [],
+                    "interaction_mode": interaction_mode,
+                    "llm_model": active_model,
+                    "llm_model_override": bool(model_override),
+                    "llm_error": llm_error,
+                },
+            )
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -433,6 +494,7 @@ class AgentService:
                 "route_confidence": round(intent_decision.confidence, 4),
                 "route_agent": route_agent,
                 "candidate_tools": candidate_tool_names,
+                "interaction_mode": interaction_mode,
                 "llm_model": active_model,
                 "llm_model_override": bool(model_override),
                 "llm_error": llm_error,
@@ -939,6 +1001,27 @@ class AgentService:
             f"Executed {len(direct_results)} actions, succeeded {len(success_rows)}, "
             f"failed {len(failed_rows)} ({failed_names})."
         )
+
+    def _build_chat_mode_plan(self) -> AgentPlan:
+        return AgentPlan(
+            steps=[
+                PlanStep(step_id=1, stage="perceive", summary="Receive user request", status="completed"),
+                PlanStep(step_id=2, stage="chat", summary="Chat mode: skip tool execution", status="completed"),
+                PlanStep(step_id=3, stage="feedback", summary="Generate reply and update memory", status="pending"),
+            ],
+            tool_calls=[],
+            unresolved_queries=[],
+        )
+
+    def _resolve_interaction_mode(self, metadata: dict[str, Any]) -> str:
+        for key in ("interaction_mode", "ui_mode", "mode"):
+            raw = metadata.get(key)
+            if not isinstance(raw, str):
+                continue
+            value = raw.strip().lower()
+            if value in {INTERACTION_MODE_AGENT, INTERACTION_MODE_CHAT}:
+                return value
+        return INTERACTION_MODE_AGENT
 
     def _resolve_model_override(self, metadata: dict[str, Any]) -> str | None:
         for key in ("llm_model", "llm_model_override"):
