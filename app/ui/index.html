@@ -323,6 +323,7 @@
       node.textContent = text;
       chatEl.appendChild(node);
       chatEl.scrollTop = chatEl.scrollHeight;
+      return node;
     }
 
     function readRequest() {
@@ -377,7 +378,9 @@
           signal: controller.signal,
         });
 
-        pending.remove();
+        if (pending && typeof pending.remove === "function") {
+          pending.remove();
+        }
         clearTimeout(timer);
 
         if (!resp.ok) {
@@ -419,7 +422,9 @@
 
         appendMessage("assistant", replyText, details);
       } catch (err) {
-        pending.remove();
+        if (pending && typeof pending.remove === "function") {
+          pending.remove();
+        }
         clearTimeout(timer);
         if (err && err.name === "AbortError") {
           appendMessage("error", "Request timeout", {
