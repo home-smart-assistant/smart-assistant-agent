@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Smart Assistant Agent UI</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1e2430;
+      --text: #e7edf7;
+      --muted: #95a2b8;
+      --border: #2b3342;
+      --accent: #22c55e;
+      --user: #263448;
+      --assistant: #202a1f;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #1d2330 0%, var(--bg) 45%);
+      color: var(--text);
+      font: 14px/1.45 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .app {
+      width: min(960px, 100%);
+      height: min(92vh, 900px);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 80%), var(--panel);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+    }
+
+    .topbar {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .title {
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    .badge {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+    }
+
+    button, input, textarea {
+      font: inherit;
+      color: inherit;
+    }
+
+    button {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-2);
+      padding: 7px 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #3f4b61;
+    }
+
+    button.primary {
+      background: #1e3a2a;
+      border-color: #2b6d47;
+      color: #d6ffe7;
+    }
+
+    .chat {
+      overflow: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .msg {
+      max-width: 85%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: var(--user);
+    }
+
+    .msg.assistant {
+      align-self: flex-start;
+      background: var(--assistant);
+    }
+
+    .msg.system {
+      align-self: center;
+      background: transparent;
+      border-color: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 2px 0;
+    }
+
+    .msg.error {
+      align-self: center;
+      width: 100%;
+      background: rgba(239, 68, 68, 0.12);
+      border-color: rgba(239, 68, 68, 0.45);
+    }
+
+    .meta {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      border-top: 1px dashed rgba(149, 162, 184, 0.3);
+      padding-top: 8px;
+    }
+
+    .meta pre {
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border);
+      padding: 8px;
+      border-radius: 8px;
+    }
+
+    .composer {
+      border-top: 1px solid var(--border);
+      padding: 10px 12px;
+      background: rgba(0, 0, 0, 0.15);
+      display: grid;
+      gap: 8px;
+    }
+
+    .row {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 1fr auto;
+      align-items: end;
+    }
+
+    .row textarea {
+      resize: none;
+      min-height: 74px;
+      max-height: 220px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #121722;
+      padding: 10px;
+      color: var(--text);
+    }
+
+    .settings {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .settings label {
+      font-size: 12px;
+      color: var(--muted);
+      display: grid;
+      gap: 4px;
+    }
+
+    .settings input {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #121722;
+      padding: 8px;
+      color: var(--text);
+    }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .danger {
+      color: var(--danger);
+    }
+
+    @media (max-width: 760px) {
+      .settings {
+        grid-template-columns: 1fr;
+      }
+
+      .msg {
+        max-width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div>
+        <div class="title">Smart Assistant Agent UI</div>
+        <div class="badge">POST /v1/agent/respond</div>
+      </div>
+      <div class="toolbar">
+        <button id="btn-new-session" type="button">New Session</button>
+        <button id="btn-clear" type="button">Clear Chat</button>
+      </div>
+    </div>
+
+    <div id="chat" class="chat"></div>
+
+    <div class="composer">
+      <div class="settings">
+        <label>
+          Session ID
+          <input id="session-id" placeholder="optional, auto-generated by server" />
+        </label>
+        <label>
+          Device ID
+          <input id="device-id" placeholder="android-1" />
+        </label>
+        <label>
+          Home ID
+          <input id="home-id" placeholder="home-1" />
+        </label>
+      </div>
+
+      <div class="row">
+        <textarea id="prompt" placeholder="Type your message... (Enter to send, Shift+Enter for newline)"></textarea>
+        <button id="btn-send" class="primary" type="button">Send</button>
+      </div>
+
+      <div class="hint">
+        Response details (trace/tool/plan) are shown under assistant messages.
+        If request fails, error details are shown as a red message.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const chatEl = document.getElementById("chat");
+    const promptEl = document.getElementById("prompt");
+    const sessionIdEl = document.getElementById("session-id");
+    const deviceIdEl = document.getElementById("device-id");
+    const homeIdEl = document.getElementById("home-id");
+    const sendBtn = document.getElementById("btn-send");
+    const newSessionBtn = document.getElementById("btn-new-session");
+    const clearBtn = document.getElementById("btn-clear");
+
+    let inFlight = false;
+
+    function appendMessage(role, text, details) {
+      const msg = document.createElement("div");
+      msg.className = "msg " + role;
+      msg.textContent = text;
+
+      if (details && Object.keys(details).length > 0) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const pre = document.createElement("pre");
+        pre.textContent = JSON.stringify(details, null, 2);
+        meta.appendChild(pre);
+        msg.appendChild(meta);
+      }
+
+      chatEl.appendChild(msg);
+      chatEl.scrollTop = chatEl.scrollHeight;
+      return msg;
+    }
+
+    function appendSystem(text) {
+      const node = document.createElement("div");
+      node.className = "msg system";
+      node.textContent = text;
+      chatEl.appendChild(node);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    function readRequest() {
+      const text = promptEl.value.trim();
+      if (!text) {
+        return null;
+      }
+
+      const metadata = {};
+      const deviceId = deviceIdEl.value.trim();
+      const homeId = homeIdEl.value.trim();
+      if (deviceId) metadata.device_id = deviceId;
+      if (homeId) metadata.home_id = homeId;
+
+      const payload = {
+        text,
+        metadata,
+      };
+
+      const sessionId = sessionIdEl.value.trim();
+      if (sessionId) {
+        payload.session_id = sessionId;
+      }
+      return payload;
+    }
+
+    async function send() {
+      if (inFlight) return;
+      const payload = readRequest();
+      if (!payload) return;
+
+      inFlight = true;
+      sendBtn.disabled = true;
+      promptEl.disabled = true;
+      appendMessage("user", payload.text);
+      promptEl.value = "";
+
+      const pending = appendSystem("Agent is thinking...");
+
+      try {
+        const resp = await fetch("/v1/agent/respond", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        pending.remove();
+
+        if (!resp.ok) {
+          let detail = null;
+          try {
+            detail = await resp.json();
+          } catch (_) {
+            detail = { message: "non-json error response" };
+          }
+          appendMessage(
+            "error",
+            "Request failed: HTTP " + resp.status,
+            detail && typeof detail === "object" ? detail : { detail }
+          );
+          return;
+        }
+
+        const data = await resp.json();
+        const sessionId = data.session_id || data.sessionId;
+        if (sessionId) {
+          sessionIdEl.value = sessionId;
+        }
+
+        const replyText = data.reply_text || data.replyText || "(empty reply)";
+        const details = {};
+        if (data.source) details.source = data.source;
+        if (data.trace_id) details.trace_id = data.trace_id;
+        if (data.tool_call) details.tool_call = data.tool_call;
+        if (data.tool_result) details.tool_result = data.tool_result;
+        if (Array.isArray(data.tool_results) && data.tool_results.length) {
+          details.tool_results = data.tool_results;
+        }
+        if (Array.isArray(data.plan) && data.plan.length) {
+          details.plan = data.plan;
+        }
+        if (data.security && Object.keys(data.security).length) {
+          details.security = data.security;
+        }
+
+        appendMessage("assistant", replyText, details);
+      } catch (err) {
+        pending.remove();
+        appendMessage("error", "Network error", { message: String(err) });
+      } finally {
+        inFlight = false;
+        sendBtn.disabled = false;
+        promptEl.disabled = false;
+        promptEl.focus();
+      }
+    }
+
+    sendBtn.addEventListener("click", send);
+
+    promptEl.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" && !evt.shiftKey) {
+        evt.preventDefault();
+        send();
+      }
+    });
+
+    newSessionBtn.addEventListener("click", () => {
+      sessionIdEl.value = "";
+      appendSystem("Session ID cleared. Next message will create a new session.");
+    });
+
+    clearBtn.addEventListener("click", () => {
+      chatEl.innerHTML = "";
+      appendSystem("Chat cleared.");
+    });
+
+    appendSystem("Ready. Send a message to call /v1/agent/respond.");
+  </script>
+</body>
+</html>

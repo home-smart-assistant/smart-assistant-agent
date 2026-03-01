@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 
 from app.core.config import AppConfig
 from app.core.models import AgentRespondRequest, AgentRespondResponse
@@ -15,6 +17,14 @@ config = AppConfig.from_env()
 app = FastAPI(title=config.app_name, version=config.app_version)
 logger = logging.getLogger(config.app_name)
 service = AgentService(config)
+UI_INDEX_PATH = Path(__file__).resolve().parent / "ui" / "index.html"
+
+
+@app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+async def agent_chat_ui() -> HTMLResponse:
+    if not UI_INDEX_PATH.exists():
+        raise HTTPException(status_code=500, detail="ui asset missing")
+    return HTMLResponse(content=UI_INDEX_PATH.read_text(encoding="utf-8"))
 
 
 @app.post("/v1/agent/respond", response_model=AgentRespondResponse)

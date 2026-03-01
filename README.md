@@ -34,6 +34,7 @@ FastAPI-based smart home agent with a non-framework loop:
 - `GET /v1/agent/trace/{trace_id}`
 - `GET /v1/agent/traces`
 - `GET /v1/agent/metrics`
+- `GET /ui` (lightweight ChatGPT-style web chat UI for calling `/v1/agent/respond`)
 
 ## Long-term Memory (FAISS fixed)
 - No vector DB backend switching
