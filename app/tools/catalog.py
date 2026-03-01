@@ -71,6 +71,22 @@ LIGHT_REQUEST_CUES = (
     "turn",
     "switch",
 )
+ALL_SCOPE_HINTS = (
+    "所有",
+    "全部",
+    "全屋",
+    "全家",
+    "整屋",
+    "整个家",
+    "all lights",
+    "all the lights",
+    "every light",
+    "all lamps",
+    "all lighting",
+    "whole house",
+    "entire home",
+    "entire house",
+)
 LEAVE_HOME_HINTS = (
     "离开",
     "出门",
@@ -567,7 +583,9 @@ class ToolCatalog:
         if not normalized:
             return None
         lower = normalized.lower()
-        area = self._detect_area(lower)
+        explicit_area = self._detect_area_explicit(lower)
+        area = explicit_area or self._default_area()
+        all_scope_without_area = explicit_area is None and self._is_all_scope_requested(lower)
 
         area_sync_call = self._detect_area_sync_tool_call(lower)
         if area_sync_call is not None:
@@ -582,15 +600,18 @@ class ToolCatalog:
         if self._has_light_off_intent(lower):
             target = self._find_light_tool(service="turn_off")
             if target:
-                return ToolCall(tool_name=target.tool_name, arguments={"area": area})
+                action_area = "all" if all_scope_without_area else area
+                return ToolCall(tool_name=target.tool_name, arguments={"area": action_area})
         if self._has_leave_home_light_off_intent(lower):
             target = self._find_light_tool(service="turn_off")
             if target:
-                return ToolCall(tool_name=target.tool_name, arguments={"area": area})
+                action_area = "all" if all_scope_without_area else area
+                return ToolCall(tool_name=target.tool_name, arguments={"area": action_area})
         if self._has_light_on_intent(lower):
             target = self._find_light_tool(service="turn_on")
             if target:
-                return ToolCall(tool_name=target.tool_name, arguments={"area": area})
+                action_area = "all" if all_scope_without_area else area
+                return ToolCall(tool_name=target.tool_name, arguments={"area": action_area})
 
         if SCENE_CINEMA_WORD in lower or SCENE_HOME_WORD in lower or SCENE_GOOD_NIGHT_WORD in lower:
             target = self._find_scene_tool()
@@ -1353,6 +1374,11 @@ class ToolCatalog:
 
     def _has_climate_request_cue(self, text: str) -> bool:
         return self._contains_any(text, CLIMATE_REQUEST_CUES)
+
+    def _is_all_scope_requested(self, text: str) -> bool:
+        if self._contains_any(text, ALL_SCOPE_HINTS):
+            return True
+        return bool(re.search(r"\ball\b", text))
 
     def _contains_light_reference(self, text: str) -> bool:
         return LIGHT_CHAR in text or "light" in text or "lights" in text
