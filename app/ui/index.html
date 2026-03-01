@@ -260,8 +260,9 @@
         </label>
         <label>
           LLM Model
-          <input id="model-name" list="model-options" placeholder="default model from server" />
-          <datalist id="model-options"></datalist>
+          <select id="model-name">
+            <option value="">(loading models...)</option>
+          </select>
         </label>
         <label>
           Timeout (s)
@@ -290,7 +291,6 @@
     const homeIdEl = document.getElementById("home-id");
     const interactionModeEl = document.getElementById("interaction-mode");
     const modelNameEl = document.getElementById("model-name");
-    const modelOptionsEl = document.getElementById("model-options");
     const requestTimeoutEl = document.getElementById("request-timeout");
     const sendBtn = document.getElementById("btn-send");
     const newSessionBtn = document.getElementById("btn-new-session");
@@ -446,15 +446,42 @@
         }
         const data = await resp.json();
         const models = Array.isArray(data.models) ? data.models : [];
-        modelOptionsEl.innerHTML = "";
+        const currentValue = modelNameEl.value.trim();
+        const options = [];
+
+        if (data.default_model && typeof data.default_model === "string" && data.default_model.trim()) {
+          const def = data.default_model.trim();
+          options.push({ value: def, label: def + " (default)" });
+        }
         for (const name of models) {
+          if (typeof name !== "string") continue;
+          const value = name.trim();
+          if (!value) continue;
+          if (!options.some((item) => item.value === value)) {
+            options.push({ value, label: value });
+          }
+        }
+
+        modelNameEl.innerHTML = "";
+        if (options.length === 0) {
+          const emptyOpt = document.createElement("option");
+          emptyOpt.value = "";
+          emptyOpt.textContent = "(no model available)";
+          modelNameEl.appendChild(emptyOpt);
+          return;
+        }
+
+        for (const item of options) {
           const opt = document.createElement("option");
-          opt.value = name;
-          modelOptionsEl.appendChild(opt);
+          opt.value = item.value;
+          opt.textContent = item.label;
+          modelNameEl.appendChild(opt);
         }
-        if (!modelNameEl.value && data.default_model) {
-          modelNameEl.value = data.default_model;
-        }
+
+        const selected = options.some((item) => item.value === currentValue)
+          ? currentValue
+          : (data.default_model || options[0].value);
+        modelNameEl.value = selected;
       } catch (_) {
         // Keep UI usable even if model discovery fails.
       }
