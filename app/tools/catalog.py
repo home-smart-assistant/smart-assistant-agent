@@ -1,7 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
-import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -13,203 +12,6 @@ from app.core.models import ToolCall
 from app.core.text_codec import EncodingNormalizationError, normalize_payload, normalize_text
 
 
-LIGHT_CHAR = "灯"
-SCENE_CINEMA_WORD = "影院模式"
-SCENE_HOME_WORD = "回家模式"
-SCENE_GOOD_NIGHT_WORD = "晚安模式"
-CLIMATE_WORD = "空调"
-
-LIGHT_ON_KEYWORDS = (
-    "开灯",
-    "打开灯",
-    "开一下灯",
-    "把灯打开",
-    "帮我打开灯",
-    "turn on",
-    "lights on",
-)
-LIGHT_OFF_KEYWORDS = (
-    "关灯",
-    "关闭灯",
-    "关掉灯",
-    "把灯关掉",
-    "帮我关灯",
-    "turn off",
-    "lights off",
-)
-LIGHT_ON_VERBS = ("打开", "开启", "开")
-LIGHT_OFF_VERBS = ("关闭", "关掉", "关")
-LIGHT_STATE_ON_PHRASES = (
-    "灯是开启",
-    "灯开启了",
-    "灯已经开启",
-    "灯开着",
-    "灯是开的",
-    "灯亮着",
-    "light is on",
-    "lights are on",
-)
-LIGHT_STATE_OFF_PHRASES = (
-    "灯是关闭",
-    "灯关着",
-    "灯没开",
-    "灯没有开",
-    "灯没有开启",
-    "灯是灭的",
-    "灯是关的",
-    "light is off",
-    "lights are off",
-)
-LIGHT_REQUEST_CUES = (
-    "帮我",
-    "请",
-    "麻烦",
-    "把",
-    "给我",
-    "please",
-    "can you",
-    "turn",
-    "switch",
-)
-ALL_SCOPE_HINTS = (
-    "所有",
-    "全部",
-    "全屋",
-    "全家",
-    "整屋",
-    "整个家",
-    "all lights",
-    "all the lights",
-    "every light",
-    "all lamps",
-    "all lighting",
-    "whole house",
-    "entire home",
-    "entire house",
-)
-EXCEPT_SCOPE_HINTS = (
-    "except",
-    "but not",
-    "excluding",
-    "exclude",
-)
-LEAVE_HOME_HINTS = (
-    "离开",
-    "出门",
-    "要走了",
-    "外出",
-    "leave",
-    "going out",
-)
-
-CLIMATE_SET_KEYWORDS = ("调到", "设置", "设为", "调成", "调为", "开到")
-CLIMATE_ON_KEYWORDS = (
-    "开空调",
-    "打开空调",
-    "开一下空调",
-    "开启空调",
-    "把空调打开",
-    "帮我打开空调",
-    "turn on air conditioner",
-    "turn on ac",
-    "ac on",
-)
-CLIMATE_OFF_KEYWORDS = (
-    "关空调",
-    "关闭空调",
-    "关掉空调",
-    "把空调关掉",
-    "帮我关空调",
-    "turn off air conditioner",
-    "turn off ac",
-    "ac off",
-)
-CLIMATE_ON_VERBS = ("打开", "开启", "开", "启动")
-CLIMATE_OFF_VERBS = ("关闭", "关掉", "关", "停止")
-CLIMATE_STATE_ON_PHRASES = (
-    "空调是开启",
-    "空调开启了",
-    "空调已经开启",
-    "空调开着",
-    "空调是开的",
-    "ac is on",
-    "air conditioner is on",
-)
-CLIMATE_STATE_OFF_PHRASES = (
-    "空调是关闭",
-    "空调关着",
-    "空调没开",
-    "空调没有开",
-    "空调是关的",
-    "ac is off",
-    "air conditioner is off",
-)
-CLIMATE_REQUEST_CUES = LIGHT_REQUEST_CUES
-
-AREA_WORD = "区域"
-AREA_SYNC_HINTS = (
-    "区域",
-    "房间",
-    "区域整理",
-    "房间整理",
-    "设置区域",
-    "设置房间",
-    "创建区域",
-    "创建房间",
-    "area",
-    "areas",
-)
-AREA_SYNC_ACTION_HINTS = (
-    "整理",
-    "设置",
-    "创建",
-    "同步",
-    "set",
-    "setup",
-    "create",
-    "sync",
-)
-AREA_DELETE_HINTS = (
-    "删掉",
-    "删除",
-    "清理",
-    "无用",
-    "delete",
-    "remove",
-    "cleanup",
-)
-AREA_AUDIT_HINTS = (
-    "检查",
-    "排查",
-    "审计",
-    "归属",
-    "归区",
-    "未分配",
-    "未归属",
-    "漏分配",
-    "audit",
-    "check",
-    "inspect",
-    "unassigned",
-)
-AREA_ASSIGN_HINTS = (
-    "归类",
-    "分配",
-    "归位",
-    "回写",
-    "修复归属",
-    "应用建议",
-    "批量归类",
-    "assign",
-    "apply suggestion",
-)
-AREA_AUDIT_UNAVAILABLE_HINTS = (
-    "离线",
-    "不可用",
-    "offline",
-    "unavailable",
-)
-TARGET_AREA_NAMES = ("玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊")
 AREA_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "xuan_guan": ("玄关", "xuan_guan", "xuanguan", "entryway", "foyer"),
     "kitchen": ("厨房", "kitchen", "chu_fang", "chufang"),
@@ -221,13 +23,8 @@ AREA_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "study": ("书房", "study", "shu_fang", "shufang"),
     "bathroom": ("卫生间", "浴室", "bathroom", "wc", "toilet", "wei_sheng_jian", "weishengjian"),
     "corridor": ("走廊", "corridor", "hallway", "zou_lang", "zoulang"),
+    "balcony": ("阳台", "balcony", "yang_tai", "yangtai"),
 }
-AREA_DETECTION_FALLBACKS: dict[str, tuple[str, ...]] = {
-    "master_bedroom": ("bedroom",),
-    "guest_bedroom": ("bedroom",),
-    "bedroom": ("master_bedroom", "guest_bedroom"),
-}
-
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -264,10 +61,9 @@ class ToolCatalog:
         self._lock = threading.RLock()
         self._last_refresh_at = 0.0
         self._last_refresh_error: str | None = None
-        self._catalog_source = "fallback"
+        self._catalog_source = "unavailable"
         self._api_endpoints: set[tuple[str, str]] = set()
         self._specs: dict[str, ToolSpec] = {}
-        self._load_fallback_specs()
         self.refresh(force=True)
 
     def refresh(self, *, force: bool = False) -> None:
@@ -286,6 +82,9 @@ class ToolCatalog:
         except Exception as ex:
             with self._lock:
                 self._last_refresh_error = str(ex)
+                self._catalog_source = "unavailable"
+                self._specs = {}
+                self._api_endpoints = set()
             return
 
         with self._lock:
@@ -418,8 +217,13 @@ class ToolCatalog:
         if spec is None or not spec.enabled:
             return None, f"unknown_tool:{tool_call.tool_name}"
 
-        merged = dict(spec.default_arguments)
-        merged.update(tool_call.arguments)
+        unknown_keys = self._find_unknown_argument_keys(spec, tool_call.arguments)
+        if unknown_keys:
+            return None, f"invalid_arguments:unknown_argument:{unknown_keys[0]}"
+
+        # Strict mode: do not auto-merge catalog defaults into runtime arguments.
+        # Tool arguments must be explicitly generated by the LLM and pass schema validation.
+        merged = dict(tool_call.arguments)
 
         strategy = spec.strategy.strip().lower()
         if strategy in {"light_area", "cover_area", "climate_area", "climate_area_temperature"}:
@@ -433,9 +237,12 @@ class ToolCatalog:
                     )
                 except EncodingNormalizationError as ex:
                     return None, f"invalid_text_encoding:{ex.field_path}"
-                merged["area"] = area_text.strip().lower()
+                normalized_area = area_text.strip().lower()
+                if not normalized_area:
+                    return None, "invalid_arguments:area must not be empty"
+                merged["area"] = normalized_area
             elif "entity_id" not in merged:
-                merged["area"] = self._default_area()
+                return None, "invalid_arguments:area or entity_id is required"
 
         if strategy == "scene_id":
             scene_id = str(merged.get("scene_id", "")).strip().lower()
@@ -568,6 +375,19 @@ class ToolCatalog:
 
         return merged, None
 
+    def _find_unknown_argument_keys(self, spec: ToolSpec, arguments: dict[str, Any]) -> list[str]:
+        if not isinstance(arguments, dict) or not arguments:
+            return []
+        schema = spec.parameters_schema if isinstance(spec.parameters_schema, dict) else {}
+        if schema.get("additionalProperties") is not False:
+            return []
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return sorted(str(key) for key in arguments.keys())
+        allowed_keys = {str(key) for key in properties.keys()}
+        unknown = [str(key) for key in arguments.keys() if str(key) not in allowed_keys]
+        return sorted(unknown)
+
     def build_rollback_call(self, tool_call: ToolCall) -> ToolCall | None:
         with self._lock:
             spec = self._specs.get(tool_call.tool_name)
@@ -577,95 +397,6 @@ class ToolCatalog:
             if not rollback_spec or not rollback_spec.enabled:
                 return None
         return ToolCall(tool_name=spec.rollback_tool, arguments=dict(tool_call.arguments))
-
-    def detect_tool_call(self, text: str) -> ToolCall | None:
-        self.refresh(force=False)
-        with self._lock:
-            supports_tool_call = ("POST", "/v1/tools/call") in self._api_endpoints
-        if not supports_tool_call:
-            return None
-
-        normalized = text.strip()
-        if not normalized:
-            return None
-        lower = normalized.lower()
-        explicit_area = self._detect_area_explicit(lower)
-        area = explicit_area or self._default_area()
-        excluded_areas = self._extract_excluded_areas(lower)
-        all_scope_requested = self._is_all_scope_requested(lower)
-        all_scope_without_area = explicit_area is None and self._is_all_scope_requested(lower)
-
-        area_sync_call = self._detect_area_sync_tool_call(lower)
-        if area_sync_call is not None:
-            return area_sync_call
-        area_assign_call = self._detect_area_assign_tool_call(lower)
-        if area_assign_call is not None:
-            return area_assign_call
-        area_audit_call = self._detect_area_audit_tool_call(lower)
-        if area_audit_call is not None:
-            return area_audit_call
-
-        if self._has_light_off_intent(lower):
-            target = self._find_light_tool(service="turn_off")
-            if target:
-                action_area = "all" if (all_scope_without_area or (all_scope_requested and excluded_areas)) else area
-                args: dict[str, Any] = {"area": action_area}
-                if action_area == "all" and excluded_areas:
-                    args["exclude_areas"] = excluded_areas
-                return ToolCall(tool_name=target.tool_name, arguments=args)
-        if self._has_leave_home_light_off_intent(lower):
-            target = self._find_light_tool(service="turn_off")
-            if target:
-                action_area = "all" if (all_scope_without_area or (all_scope_requested and excluded_areas)) else area
-                args: dict[str, Any] = {"area": action_area}
-                if action_area == "all" and excluded_areas:
-                    args["exclude_areas"] = excluded_areas
-                return ToolCall(tool_name=target.tool_name, arguments=args)
-        if self._has_light_on_intent(lower):
-            target = self._find_light_tool(service="turn_on")
-            if target:
-                action_area = "all" if (all_scope_without_area or (all_scope_requested and excluded_areas)) else area
-                args: dict[str, Any] = {"area": action_area}
-                if action_area == "all" and excluded_areas:
-                    args["exclude_areas"] = excluded_areas
-                return ToolCall(tool_name=target.tool_name, arguments=args)
-
-        if SCENE_CINEMA_WORD in lower or SCENE_HOME_WORD in lower or SCENE_GOOD_NIGHT_WORD in lower:
-            target = self._find_scene_tool()
-            if target:
-                if SCENE_CINEMA_WORD in lower:
-                    scene_id = "scene.cinema"
-                elif SCENE_HOME_WORD in lower:
-                    scene_id = "scene.home"
-                else:
-                    scene_id = "scene.good_night"
-                return ToolCall(tool_name=target.tool_name, arguments={"scene_id": scene_id})
-
-        if self._contains_climate_reference(lower):
-            if self._contains_any(lower, CLIMATE_SET_KEYWORDS):
-                target = self._find_climate_temperature_tool()
-                temperature = self._extract_temperature(lower)
-                if target and temperature is not None:
-                    return ToolCall(
-                        tool_name=target.tool_name,
-                        arguments={
-                            "area": area,
-                            "temperature": temperature,
-                        },
-                    )
-            if self._has_climate_off_intent(lower):
-                target = self._find_climate_tool(service="turn_off")
-                if target:
-                    return ToolCall(tool_name=target.tool_name, arguments={"area": area})
-            if self._has_leave_home_climate_off_intent(lower):
-                target = self._find_climate_tool(service="turn_off")
-                if target:
-                    return ToolCall(tool_name=target.tool_name, arguments={"area": area})
-            if self._has_climate_on_intent(lower):
-                target = self._find_climate_tool(service="turn_on")
-                if target:
-                    return ToolCall(tool_name=target.tool_name, arguments={"area": area})
-        return None
 
     def health_meta(self) -> dict[str, Any]:
         with self._lock:
@@ -733,7 +464,7 @@ class ToolCatalog:
                 self._parse_string_list(row.get("allowed_agents"), fallback=["home_automation_agent"])
             )
             rollout_percentage = self._clamp_percentage(row.get("rollout_percentage"), fallback=100)
-            parameters_schema = self._build_parameters_schema(strategy, default_arguments)
+            parameters_schema = self._build_parameters_schema(strategy)
             specs[tool_name] = ToolSpec(
                 tool_name=tool_name,
                 description=description,
@@ -764,122 +495,16 @@ class ToolCatalog:
                 endpoints.add((method, path))
         return endpoints
 
-    def _load_fallback_specs(self) -> None:
-        fallback_rows = [
-            {
-                "tool_name": "home.lights.on",
-                "description": "Turn on lights by area",
-                "strategy": "light_area",
-                "domain": "auto",
-                "service": "turn_on",
-                "enabled": True,
-                "default_arguments": {"area": "living_room"},
-            },
-            {
-                "tool_name": "home.lights.off",
-                "description": "Turn off lights by area",
-                "strategy": "light_area",
-                "domain": "auto",
-                "service": "turn_off",
-                "enabled": True,
-                "default_arguments": {"area": "living_room"},
-            },
-            {
-                "tool_name": "home.scene.activate",
-                "description": "Activate a scene",
-                "strategy": "scene_id",
-                "domain": "scene",
-                "service": "turn_on",
-                "enabled": True,
-                "default_arguments": {},
-            },
-            {
-                "tool_name": "home.climate.turn_on",
-                "description": "Turn on climate by area",
-                "strategy": "climate_area",
-                "domain": "climate",
-                "service": "turn_on",
-                "enabled": True,
-                "default_arguments": {"area": "living_room"},
-            },
-            {
-                "tool_name": "home.climate.turn_off",
-                "description": "Turn off climate by area",
-                "strategy": "climate_area",
-                "domain": "climate",
-                "service": "turn_off",
-                "enabled": True,
-                "default_arguments": {"area": "living_room"},
-            },
-            {
-                "tool_name": "home.climate.set_temperature",
-                "description": "Set climate temperature by area",
-                "strategy": "climate_area_temperature",
-                "domain": "climate",
-                "service": "set_temperature",
-                "enabled": True,
-                "default_arguments": {"area": "living_room"},
-            },
-            {
-                "tool_name": "home.areas.sync",
-                "description": "Ensure target HA areas and clean unused areas",
-                "strategy": "area_sync",
-                "domain": "ha",
-                "service": "areas_sync",
-                "enabled": True,
-                "default_arguments": {
-                    "target_areas": ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
-                    "delete_unused": True,
-                    "force_delete_in_use": False,
-                },
-            },
-            {
-                "tool_name": "home.areas.audit",
-                "description": "Audit area assignment and suggest target areas for unassigned entities",
-                "strategy": "area_audit",
-                "domain": "ha",
-                "service": "areas_audit",
-                "enabled": True,
-                "default_arguments": {
-                    "target_areas": ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
-                    "domains": ["light", "switch", "climate", "cover", "fan"],
-                    "include_unavailable": False,
-                },
-            },
-            {
-                "tool_name": "home.areas.assign",
-                "description": "Assign unassigned entities to areas based on audit suggestions",
-                "strategy": "area_assign",
-                "domain": "ha",
-                "service": "areas_assign",
-                "enabled": True,
-                "default_arguments": {
-                    "target_areas": ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
-                    "domains": ["light", "switch", "climate", "cover", "fan"],
-                    "include_unavailable": False,
-                    "only_with_suggestion": True,
-                    "max_updates": 200,
-                },
-            },
-        ]
-        self._specs = self._build_specs_from_rows(fallback_rows)
-        self._api_endpoints = {("POST", "/v1/tools/call")}
-        self._catalog_source = "fallback"
-
-    def _build_parameters_schema(self, strategy: str, default_arguments: dict[str, Any]) -> dict[str, Any]:
+    def _build_parameters_schema(self, strategy: str) -> dict[str, Any]:
         schema: dict[str, Any] = {
             "type": "object",
             "properties": {},
             "required": [],
-            "additionalProperties": True,
+            "additionalProperties": False,
         }
-        area_enum = self._extract_area_enum(default_arguments)
 
         if strategy in {"light_area", "cover_area", "climate_area", "climate_area_temperature"}:
-            area_schema: dict[str, Any] = {"type": "string"}
-            if area_enum:
-                area_schema["enum"] = area_enum
-            schema["properties"]["area"] = area_schema
+            schema["properties"]["area"] = {"type": "string"}
             schema["properties"]["entity_id"] = {
                 "anyOf": [
                     {"type": "string"},
@@ -938,22 +563,6 @@ class ToolCatalog:
         if strategy == "passthrough":
             return schema
         return schema
-
-    def _extract_area_enum(self, default_arguments: dict[str, Any]) -> list[str]:
-        values: list[str] = []
-        area = default_arguments.get("area")
-        if isinstance(area, str) and area.strip():
-            values.append(area.strip().lower())
-
-        area_map = default_arguments.get("area_entity_map")
-        if isinstance(area_map, dict):
-            for key in area_map.keys():
-                normalized = str(key).strip().lower()
-                if normalized:
-                    values.append(normalized)
-
-        deduped = list(dict.fromkeys(values))
-        return deduped
 
     def _parse_string_list(self, raw: Any, fallback: list[str]) -> list[str]:
         if isinstance(raw, list):
@@ -1140,306 +749,6 @@ class ToolCatalog:
                     mapping[name] = candidate
         return mapping
 
-    def _find_light_tool(self, *, service: str) -> ToolSpec | None:
-        with self._lock:
-            specs = [row for row in self._specs.values() if row.enabled]
-        preferred = [
-            row
-            for row in specs
-            if row.strategy == "light_area" and (row.service == service or f"lights.{service.replace('turn_', '')}" in row.tool_name)
-        ]
-        if preferred:
-            return sorted(preferred, key=lambda row: row.tool_name)[0]
-
-        fallback = [row for row in specs if row.strategy == "light_area"]
-        if service == "turn_on":
-            fallback = [row for row in fallback if ".on" in row.tool_name or "turn_on" in row.tool_name]
-        else:
-            fallback = [row for row in fallback if ".off" in row.tool_name or "turn_off" in row.tool_name]
-        if fallback:
-            return sorted(fallback, key=lambda row: row.tool_name)[0]
-        return None
-
-    def _find_scene_tool(self) -> ToolSpec | None:
-        with self._lock:
-            candidates = [row for row in self._specs.values() if row.enabled and row.strategy == "scene_id"]
-        if not candidates:
-            return None
-        return sorted(candidates, key=lambda row: row.tool_name)[0]
-
-    def _find_climate_temperature_tool(self) -> ToolSpec | None:
-        with self._lock:
-            candidates = [
-                row for row in self._specs.values() if row.enabled and row.strategy == "climate_area_temperature"
-            ]
-        if not candidates:
-            return None
-        return sorted(candidates, key=lambda row: row.tool_name)[0]
-
-    def _find_climate_tool(self, *, service: str) -> ToolSpec | None:
-        with self._lock:
-            specs = [row for row in self._specs.values() if row.enabled]
-        preferred = [
-            row
-            for row in specs
-            if row.strategy == "climate_area"
-            and (row.service == service or f"climate.{service.replace('turn_', '')}" in row.tool_name)
-        ]
-        if preferred:
-            return sorted(preferred, key=lambda row: row.tool_name)[0]
-
-        fallback = [row for row in specs if row.strategy == "climate_area"]
-        if service == "turn_on":
-            fallback = [row for row in fallback if ".on" in row.tool_name or "turn_on" in row.tool_name]
-        else:
-            fallback = [row for row in fallback if ".off" in row.tool_name or "turn_off" in row.tool_name]
-        if fallback:
-            return sorted(fallback, key=lambda row: row.tool_name)[0]
-        return None
-
-    def _find_area_sync_tool(self) -> ToolSpec | None:
-        with self._lock:
-            candidates = [row for row in self._specs.values() if row.enabled and row.strategy == "area_sync"]
-        if not candidates:
-            return None
-        return sorted(candidates, key=lambda row: row.tool_name)[0]
-
-    def _find_area_audit_tool(self) -> ToolSpec | None:
-        with self._lock:
-            candidates = [row for row in self._specs.values() if row.enabled and row.strategy == "area_audit"]
-        if not candidates:
-            return None
-        return sorted(candidates, key=lambda row: row.tool_name)[0]
-
-    def _find_area_assign_tool(self) -> ToolSpec | None:
-        with self._lock:
-            candidates = [row for row in self._specs.values() if row.enabled and row.strategy == "area_assign"]
-        if not candidates:
-            return None
-        return sorted(candidates, key=lambda row: row.tool_name)[0]
-
-    def _detect_area_sync_tool_call(self, text: str) -> ToolCall | None:
-        if not self._contains_any(text, AREA_SYNC_HINTS):
-            return None
-        if not (self._contains_any(text, AREA_SYNC_ACTION_HINTS) or self._contains_any(text, AREA_DELETE_HINTS)):
-            return None
-        target_areas = self._extract_target_areas(text)
-        if not target_areas:
-            return None
-        target = self._find_area_sync_tool()
-        if target is None:
-            return None
-        return ToolCall(
-            tool_name=target.tool_name,
-            arguments={
-                "target_areas": target_areas,
-                "delete_unused": self._contains_any(text, AREA_DELETE_HINTS),
-                "force_delete_in_use": False,
-            },
-        )
-
-    def _detect_area_assign_tool_call(self, text: str) -> ToolCall | None:
-        target_areas = self._extract_target_areas(text)
-        if not self._contains_any(text, AREA_SYNC_HINTS) and not target_areas:
-            return None
-        if not self._contains_any(text, AREA_ASSIGN_HINTS):
-            return None
-        target = self._find_area_assign_tool()
-        if target is None:
-            return None
-        target_areas = target_areas or list(TARGET_AREA_NAMES)
-        return ToolCall(
-            tool_name=target.tool_name,
-            arguments={
-                "target_areas": target_areas,
-                "domains": self._extract_area_audit_domains(text),
-                "include_unavailable": self._contains_any(text, AREA_AUDIT_UNAVAILABLE_HINTS),
-                "only_with_suggestion": True,
-                "max_updates": 200,
-            },
-        )
-
-    def _detect_area_audit_tool_call(self, text: str) -> ToolCall | None:
-        target_areas = self._extract_target_areas(text)
-        if not self._contains_any(text, AREA_SYNC_HINTS) and not target_areas:
-            return None
-        if not self._contains_any(text, AREA_AUDIT_HINTS):
-            return None
-        target = self._find_area_audit_tool()
-        if target is None:
-            return None
-        target_areas = target_areas or list(TARGET_AREA_NAMES)
-        return ToolCall(
-            tool_name=target.tool_name,
-            arguments={
-                "target_areas": target_areas,
-                "domains": self._extract_area_audit_domains(text),
-                "include_unavailable": self._contains_any(text, AREA_AUDIT_UNAVAILABLE_HINTS),
-            },
-        )
-
-    def _extract_target_areas(self, text: str) -> list[str]:
-        targets: list[str] = []
-        for area in TARGET_AREA_NAMES:
-            if area in text:
-                targets.append(area)
-        return list(dict.fromkeys(targets))
-
-    def _extract_area_audit_domains(self, text: str) -> list[str]:
-        domains: list[str] = []
-        if LIGHT_CHAR in text or "light" in text or "lights" in text:
-            domains.append("light")
-        if "开关" in text or "switch" in text:
-            domains.append("switch")
-        if CLIMATE_WORD in text or "climate" in text or "air conditioner" in text or "ac" in text:
-            domains.append("climate")
-        if "窗帘" in text or "curtain" in text or "cover" in text:
-            domains.append("cover")
-        if "风扇" in text or "fan" in text:
-            domains.append("fan")
-        if domains:
-            return list(dict.fromkeys(domains))
-        return ["light", "switch", "climate", "cover", "fan"]
-
-    def _has_light_on_intent(self, text: str) -> bool:
-        if not self._contains_light_reference(text):
-            return False
-        if self._contains_any(text, LIGHT_OFF_KEYWORDS):
-            return False
-        if self._contains_any(text, LIGHT_ON_KEYWORDS):
-            return True
-        if self._is_light_state_statement(text) and not self._has_light_request_cue(text):
-            return False
-        if not self._contains_any(text, LIGHT_ON_VERBS):
-            return False
-        if self._contains_any(text, LIGHT_STATE_ON_PHRASES) and not self._has_light_request_cue(text):
-            return False
-        return True
-
-    def _has_light_off_intent(self, text: str) -> bool:
-        if not self._contains_light_reference(text):
-            return False
-        if self._contains_any(text, LIGHT_ON_KEYWORDS):
-            return False
-        if self._contains_any(text, LIGHT_OFF_KEYWORDS):
-            return True
-        if self._is_light_state_statement(text) and not self._has_light_request_cue(text):
-            return False
-        if not self._contains_any(text, LIGHT_OFF_VERBS):
-            return False
-        if self._contains_any(text, LIGHT_STATE_OFF_PHRASES) and not self._has_light_request_cue(text):
-            return False
-        return True
-
-    def _has_leave_home_light_off_intent(self, text: str) -> bool:
-        if not self._contains_light_reference(text):
-            return False
-        if not self._contains_any(text, LEAVE_HOME_HINTS):
-            return False
-        if self._contains_any(text, LIGHT_OFF_KEYWORDS):
-            return True
-        return self._contains_any(text, LIGHT_STATE_ON_PHRASES)
-
-    def _has_climate_on_intent(self, text: str) -> bool:
-        if not self._contains_climate_reference(text):
-            return False
-        if self._contains_any(text, CLIMATE_OFF_KEYWORDS):
-            return False
-        if self._contains_any(text, CLIMATE_ON_KEYWORDS):
-            return True
-        if self._is_climate_state_statement(text) and not self._has_climate_request_cue(text):
-            return False
-        if not self._contains_any(text, CLIMATE_ON_VERBS):
-            return False
-        if self._contains_any(text, CLIMATE_STATE_ON_PHRASES) and not self._has_climate_request_cue(text):
-            return False
-        return True
-
-    def _has_climate_off_intent(self, text: str) -> bool:
-        if not self._contains_climate_reference(text):
-            return False
-        if self._contains_any(text, CLIMATE_ON_KEYWORDS):
-            return False
-        if self._contains_any(text, CLIMATE_OFF_KEYWORDS):
-            return True
-        if self._is_climate_state_statement(text) and not self._has_climate_request_cue(text):
-            return False
-        if not self._contains_any(text, CLIMATE_OFF_VERBS):
-            return False
-        if self._contains_any(text, CLIMATE_STATE_OFF_PHRASES) and not self._has_climate_request_cue(text):
-            return False
-        return True
-
-    def _has_leave_home_climate_off_intent(self, text: str) -> bool:
-        if not self._contains_climate_reference(text):
-            return False
-        if not self._contains_any(text, LEAVE_HOME_HINTS):
-            return False
-        if self._contains_any(text, CLIMATE_OFF_KEYWORDS):
-            return True
-        return self._contains_any(text, CLIMATE_STATE_ON_PHRASES)
-
-    def _is_light_state_statement(self, text: str) -> bool:
-        return self._contains_any(text, LIGHT_STATE_ON_PHRASES + LIGHT_STATE_OFF_PHRASES)
-
-    def _has_light_request_cue(self, text: str) -> bool:
-        return self._contains_any(text, LIGHT_REQUEST_CUES)
-
-    def _is_climate_state_statement(self, text: str) -> bool:
-        return self._contains_any(text, CLIMATE_STATE_ON_PHRASES + CLIMATE_STATE_OFF_PHRASES)
-
-    def _has_climate_request_cue(self, text: str) -> bool:
-        return self._contains_any(text, CLIMATE_REQUEST_CUES)
-
-    def _is_all_scope_requested(self, text: str) -> bool:
-        if self._contains_any(text, ALL_SCOPE_HINTS):
-            return True
-        return bool(re.search(r"\ball\b", text))
-
-    def _extract_excluded_areas(self, text: str) -> list[str]:
-        segments: list[str] = []
-        zh = re.search(r"(?:除(?:了)?)(.+?)(?:之外|外)", text)
-        if zh:
-            segment = str(zh.group(1)).strip()
-            if segment:
-                segments.append(segment)
-
-        en = re.search(r"(?:except|but not|excluding|exclude)\s+(.+)", text)
-        if en:
-            segment = str(en.group(1)).strip()
-            if segment:
-                segments.append(segment)
-
-        if not segments and not self._contains_any(text, EXCEPT_SCOPE_HINTS):
-            return []
-
-        excluded: list[str] = []
-        for segment in segments or [text]:
-            for area, aliases in AREA_ALIAS_GROUPS.items():
-                if any(alias in segment for alias in aliases):
-                    excluded.append(area)
-            explicit = self._detect_area_explicit(segment)
-            if explicit:
-                excluded.append(explicit)
-        return list(dict.fromkeys(excluded))
-
-    def _contains_light_reference(self, text: str) -> bool:
-        return LIGHT_CHAR in text or "light" in text or "lights" in text
-
-    def _contains_climate_reference(self, text: str) -> bool:
-        if CLIMATE_WORD in text or "air conditioner" in text:
-            return True
-        return re.search(r"\bac\b", text) is not None
-
-    def _contains_any(self, text: str, keywords: tuple[str, ...]) -> bool:
-        return any(keyword in text for keyword in keywords)
-
-    def _detect_area(self, text: str) -> str:
-        explicit = self._detect_area_explicit(text)
-        if explicit:
-            return explicit
-        return self._default_area()
-
     def _detect_area_explicit(self, text: str) -> str | None:
         known = self._known_areas()
         for area, words in AREA_ALIAS_GROUPS.items():
@@ -1447,9 +756,6 @@ class ToolCatalog:
                 continue
             if area in known:
                 return area
-            for fallback in AREA_DETECTION_FALLBACKS.get(area, ()):
-                if fallback in known:
-                    return fallback
             return area
 
         for area in sorted(known):
@@ -1461,8 +767,7 @@ class ToolCatalog:
         with self._lock:
             specs = [row for row in self._specs.values() if row.enabled]
 
-        areas: set[str] = set()
-        areas.update(AREA_ALIAS_GROUPS.keys())
+        areas: set[str] = set(AREA_ALIAS_GROUPS.keys())
         for spec in specs:
             default_area = spec.default_arguments.get("area")
             if isinstance(default_area, str) and default_area.strip():
@@ -1473,25 +778,4 @@ class ToolCatalog:
                     normalized = str(key).strip().lower()
                     if normalized:
                         areas.add(normalized)
-        if not areas:
-            areas = {"living_room", "bedroom", "study"}
         return areas
-
-    def _default_area(self) -> str:
-        known = self._known_areas()
-        if "living_room" in known:
-            return "living_room"
-        return sorted(known)[0]
-
-    def _extract_temperature(self, text: str) -> int | None:
-        numbers = re.findall(r"\d+", text)
-        if not numbers:
-            return None
-        try:
-            value = int(numbers[0])
-        except ValueError:
-            return None
-        if 16 <= value <= 30:
-            return value
-        return None
-

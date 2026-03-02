@@ -16,6 +16,11 @@
 
 ## Key Design Choices
 - No external agent framework; native function-calling orchestration
+- Strict LLM-first routing: no rule-based tool fallback for `/v1/agent/respond`
+- Tool catalog source is HA Bridge only; no hardcoded local catalog fallback
+- `metadata.route` override is disabled; route comes from LLM intent classifier only
+- Agent mode requires valid `tool_calls`; plain-text-only router output is a hard failure
+- Tool arguments are strict whitelist (`additionalProperties=false`), validated before execution
 - Short-term memory: bounded window + token budget
 - Long-term memory backend is fixed:
   - FAISS index: `IndexIDMap2(IndexFlatIP)`
@@ -31,6 +36,13 @@
   - tool whitelist
   - role-based permission checks
   - prompt injection guard
+- Failure semantics:
+  - LLM unreachable -> HTTP 503
+  - LLM timeout -> HTTP 504
+  - LLM invalid/parse/routing failure -> HTTP 502
+- Prompting:
+  - Intent/tool/chat prompts are modularized in `app/runtime/prompt_templates.py`
+  - Tool router prompt explicitly forbids unknown args and default area guessing
 - Observability:
   - traces for decision/action path
   - token usage

@@ -1,11 +1,15 @@
 # smart_assistant_agent
 
-FastAPI-based smart home agent with a non-framework loop:
+FastAPI-based smart home agent with a non-framework loop.
 
-1. LLM (with tool schema) decides tool calls
-2. Agent validates and executes tools
-3. Tool result is fed back to LLM for final response
-4. Short-term + long-term memory are updated
+Strict behavior:
+1. LLM classifies route and generates tool calls (agent mode).
+2. Agent validates and executes tool calls.
+3. Tool catalog comes from HA Bridge only; if unavailable, routing fails explicitly.
+4. `agent` mode requires valid `tool_calls`; text-only LLM output is treated as routing failure.
+5. `metadata.route` override is disabled; route is decided by LLM intent classification.
+6. If LLM is unreachable/timeout/invalid, API fails explicitly.
+7. Short-term + long-term memory are updated.
 
 ## Tech Stack
 - Python
@@ -38,6 +42,17 @@ FastAPI-based smart home agent with a non-framework loop:
 - `GET /ui` (lightweight ChatGPT-style web chat UI for calling `/v1/agent/respond`)
   - UI supports `mode=agent|chat` (default `agent`), and optional per-request `metadata.llm_model`.
 
+`POST /v1/agent/respond` error semantics in strict mode:
+- `503`: `llm_unreachable`
+- `504`: `llm_timeout`
+- `502`: `llm_bad_response | llm_routing_failed | llm_intent_failed`
+
+`agent` mode strict semantics:
+- candidate tools are built from Bridge catalog only (no hardcoded fallback)
+- tool arguments are strict whitelist (`additionalProperties=false` per tool schema)
+- unknown keys or missing required arguments fail before execution
+- when no valid `tool_calls` are generated, request fails instead of returning chat text
+
 ## Long-term Memory (FAISS fixed)
 - No vector DB backend switching
 - Index file: `AGENT_FAISS_INDEX_PATH` (default `./data/memory/faiss.index`)
@@ -60,6 +75,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8091
 - `docs/openapi/agent.openapi.yaml`
 - `docs/llm-provider-architecture.md`
 - `docs/agent-architecture.md`
+- `app/runtime/prompt_templates.py` (intent/tool/chat prompt templates)
 
 ## Encoding Policy
 - All source files and docs use UTF-8.

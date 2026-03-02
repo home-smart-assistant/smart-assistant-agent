@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -77,8 +77,6 @@ class AppConfig:
     agent_multi_step_enabled: bool = True
     agent_max_plan_steps: int = 5
     agent_rollback_on_failure: bool = True
-    agent_use_llm_tool_router: bool = True
-    agent_use_llm_intent_router: bool = True
     agent_intent_min_confidence: float = 0.60
     agent_candidate_tool_limit: int = 20
     agent_runtime_env: str = "home"
@@ -205,8 +203,6 @@ class AppConfig:
             agent_multi_step_enabled=env_bool("AGENT_MULTI_STEP_ENABLED", True),
             agent_max_plan_steps=env_int("AGENT_MAX_PLAN_STEPS", 5),
             agent_rollback_on_failure=env_bool("AGENT_ROLLBACK_ON_FAILURE", True),
-            agent_use_llm_tool_router=env_bool("AGENT_USE_LLM_TOOL_ROUTER", True),
-            agent_use_llm_intent_router=env_bool("AGENT_USE_LLM_INTENT_ROUTER", True),
             agent_intent_min_confidence=env_float("AGENT_INTENT_MIN_CONFIDENCE", 0.60),
             agent_candidate_tool_limit=env_int("AGENT_CANDIDATE_TOOL_LIMIT", 20),
             agent_runtime_env=os.getenv("AGENT_RUNTIME_ENV", "home").strip().lower() or "home",

@@ -390,10 +390,33 @@
           } catch (_) {
             detail = { message: "non-json error response" };
           }
+          const normalizedDetail =
+            detail && typeof detail === "object" && detail.detail && typeof detail.detail === "object"
+              ? detail.detail
+              : detail;
+          const errorCode =
+            normalizedDetail && typeof normalizedDetail === "object" && typeof normalizedDetail.error_code === "string"
+              ? normalizedDetail.error_code
+              : "request_failed";
+          const stage =
+            normalizedDetail && typeof normalizedDetail === "object" && typeof normalizedDetail.stage === "string"
+              ? normalizedDetail.stage
+              : "";
+          const traceId =
+            normalizedDetail && typeof normalizedDetail === "object" && typeof normalizedDetail.trace_id === "string"
+              ? normalizedDetail.trace_id
+              : "";
+          const headline =
+            "Request failed: " +
+            errorCode +
+            (stage ? " | stage=" + stage : "") +
+            (traceId ? " | trace=" + traceId : "") +
+            " | HTTP " +
+            resp.status;
           appendMessage(
             "error",
-            "Request failed: HTTP " + resp.status,
-            detail && typeof detail === "object" ? detail : { detail }
+            headline,
+            normalizedDetail && typeof normalizedDetail === "object" ? normalizedDetail : { detail: normalizedDetail }
           );
           return;
         }

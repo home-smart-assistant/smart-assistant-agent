@@ -1,3 +1,3 @@
-from .agent_service import AgentService
+from .agent_service import AgentRuntimeError, AgentService
 
-__all__ = ["AgentService"]
+__all__ = ["AgentService", "AgentRuntimeError"]

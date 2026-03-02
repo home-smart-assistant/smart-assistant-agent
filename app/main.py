@@ -11,6 +11,7 @@ from app.core.config import AppConfig
 from app.core.models import AgentRespondRequest, AgentRespondResponse
 from app.core.text_codec import EncodingNormalizationError
 from app.runtime import AgentService
+from app.runtime.agent_service import AgentRuntimeError
 
 
 config = AppConfig.from_env()
@@ -31,6 +32,8 @@ async def agent_chat_ui() -> HTMLResponse:
 async def respond(req: AgentRespondRequest) -> AgentRespondResponse:
     try:
         return await service.respond(req)
+    except AgentRuntimeError as ex:
+        raise HTTPException(status_code=ex.status_code, detail=ex.payload) from ex
     except EncodingNormalizationError as ex:
         raise HTTPException(status_code=400, detail=ex.to_error_detail()) from ex
 

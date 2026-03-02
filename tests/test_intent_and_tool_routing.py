@@ -1,183 +1,418 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
+from unittest.mock import AsyncMock
 
-from app.runtime.agent_service import (
-    DEVICE_MAINTENANCE_ROUTE,
-    HOME_AUTOMATION_ROUTE,
-    AgentService,
-    IntentRouteDecision,
-)
+from fastapi.testclient import TestClient
+
+from app.core.config import AppConfig
+from app.core.models import AgentRespondRequest, ToolCall
+from app.llm.providers import LlmResponse, LlmToolCall
+from app.runtime.agent_service import AgentRuntimeError, AgentService
 from app.tools.catalog import ToolCatalog
 
 
-class TestToolCatalogClimateIntent(unittest.TestCase):
-    def setUp(self) -> None:
-        self.catalog = ToolCatalog(
-            bridge_url="http://127.0.0.1:1",
-            timeout_seconds=1.0,
-            refresh_interval_seconds=3600.0,
+class _HappyPathLlmProvider:
+    name = "ollama"
+
+    async def chat(self, messages, tools=None, model=None):
+        if tools:
+            return LlmResponse(
+                text="",
+                prompt_tokens=12,
+                completion_tokens=8,
+                tool_calls=[LlmToolCall(tool_name="home.lights.on", arguments={"area": "dining_room"})],
+            )
+        return LlmResponse(
+            text='{"route":"home_automation","confidence":0.93,"reason":"home control"}',
+            prompt_tokens=6,
+            completion_tokens=5,
         )
 
-    def test_detect_turn_on_climate_in_study(self) -> None:
-        text = "帮我打开书房的空调"
-        call = self.catalog.detect_tool_call(text)
-        self.assertIsNotNone(call)
-        assert call is not None
-        self.assertEqual("home.climate.turn_on", call.tool_name)
-        self.assertIn(call.arguments.get("area"), {"study", "living_room"})
-
-    def test_detect_turn_on_light_in_dining_room(self) -> None:
-        text = "打开餐厅灯"
-        call = self.catalog.detect_tool_call(text)
-        self.assertIsNotNone(call)
-        assert call is not None
-        self.assertEqual("home.lights.on", call.tool_name)
-        self.assertEqual("dining_room", call.arguments.get("area"))
-
-    def test_detect_leave_home_prefers_turn_off_climate(self) -> None:
-        text = "我在餐厅，空调是开启的，我现在要离开了"
-        call = self.catalog.detect_tool_call(text)
-        self.assertIsNotNone(call)
-        assert call is not None
-        self.assertEqual("home.climate.turn_off", call.tool_name)
-        self.assertEqual("dining_room", call.arguments.get("area"))
-
-    def test_detect_leave_home_prefers_turn_off_lights(self) -> None:
-        text = "我在餐厅，灯是开启的，我现在要离开了"
-        call = self.catalog.detect_tool_call(text)
-        self.assertIsNotNone(call)
-        assert call is not None
-        self.assertEqual("home.lights.off", call.tool_name)
-        self.assertEqual("dining_room", call.arguments.get("area"))
+    def health_meta(self):
+        return {"provider": self.name}
 
 
-class TestIntentRouteGuard(unittest.TestCase):
-    def setUp(self) -> None:
-        self.catalog = ToolCatalog(
-            bridge_url="http://127.0.0.1:1",
-            timeout_seconds=1.0,
-            refresh_interval_seconds=3600.0,
-        )
-        self.service = object.__new__(AgentService)
-        self.service.catalog = self.catalog
+class _TimeoutLlmProvider:
+    name = "ollama"
 
-    def test_rule_home_automation_not_overridden_by_llm_misroute(self) -> None:
-        text = "帮我打开书房的空调"
-        rule = IntentRouteDecision(
-            route=HOME_AUTOMATION_ROUTE,
-            confidence=0.82,
-            reason="home automation keywords detected",
-            source="rule",
-        )
-        llm = IntentRouteDecision(
-            route=DEVICE_MAINTENANCE_ROUTE,
-            confidence=0.95,
-            reason="misclassified by llm",
-            source="llm",
-        )
-        keep_rule = self.service._should_prefer_rule_route(rule, llm, text)
-        self.assertTrue(keep_rule)
+    async def chat(self, messages, tools=None, model=None):
+        return LlmResponse(text=None, error="ollama_timeout: simulated")
 
-    def test_rule_router_marks_aircon_open_as_home_automation(self) -> None:
-        text = "帮我打开书房的空调"
-        decision = self.service._rule_route_decision(text, {})
-        self.assertEqual(HOME_AUTOMATION_ROUTE, decision.route)
+    def health_meta(self):
+        return {"provider": self.name}
 
 
-class TestCandidateFilteringWithContext(unittest.TestCase):
-    def setUp(self) -> None:
-        self.catalog = ToolCatalog(
-            bridge_url="http://127.0.0.1:1",
-            timeout_seconds=1.0,
-            refresh_interval_seconds=3600.0,
+class _TextOnlyToolRouterProvider:
+    name = "ollama"
+
+    async def chat(self, messages, tools=None, model=None):
+        if tools:
+            return LlmResponse(text="我认为可以执行", prompt_tokens=9, completion_tokens=5, tool_calls=[])
+        return LlmResponse(
+            text='{"route":"home_automation","confidence":0.91,"reason":"home control"}',
+            prompt_tokens=6,
+            completion_tokens=5,
         )
 
-    def test_exclude_climate_tools_when_context_has_no_climate_entities(self) -> None:
-        ha_context = {
-            "known_entities": {
-                "light": {"study": "switch.shu_fang_deng"},
-                "climate": {},
-                "cover": {"study": "cover.study"},
-            },
-            "entity_states": {
-                "switch.shu_fang_deng": {"available": True, "state": "off"},
-            },
+    def health_meta(self):
+        return {"provider": self.name}
+
+
+class _KnowledgeRouteProvider:
+    name = "ollama"
+
+    async def chat(self, messages, tools=None, model=None):
+        if tools:
+            return LlmResponse(text="", prompt_tokens=4, completion_tokens=2, tool_calls=[])
+        return LlmResponse(
+            text='{"route":"knowledge_qa","confidence":0.90,"reason":"question answering"}',
+            prompt_tokens=6,
+            completion_tokens=5,
+        )
+
+    def health_meta(self):
+        return {"provider": self.name}
+
+
+class _UnknownArgsToolProvider:
+    name = "ollama"
+
+    async def chat(self, messages, tools=None, model=None):
+        if tools:
+            return LlmResponse(
+                text="",
+                prompt_tokens=11,
+                completion_tokens=7,
+                tool_calls=[LlmToolCall(tool_name="home.lights.on", arguments={"area": "dining_room", "foo": 1})],
+            )
+        return LlmResponse(
+            text='{"route":"home_automation","confidence":0.92,"reason":"home control"}',
+            prompt_tokens=6,
+            completion_tokens=5,
+        )
+
+    def health_meta(self):
+        return {"provider": self.name}
+
+
+class _RepairableUnknownArgsToolProvider:
+    name = "ollama"
+
+    def __init__(self) -> None:
+        self._tool_route_count = 0
+
+    async def chat(self, messages, tools=None, model=None):
+        if tools:
+            self._tool_route_count += 1
+            if self._tool_route_count == 1:
+                return LlmResponse(
+                    text="",
+                    prompt_tokens=10,
+                    completion_tokens=6,
+                    tool_calls=[
+                        LlmToolCall(
+                            tool_name="home.lights.on",
+                            arguments={
+                                "area": "dining_room",
+                                "area_entity_map": {"living_room": "light.living_room"},
+                            },
+                        )
+                    ],
+                )
+            return LlmResponse(
+                text="",
+                prompt_tokens=9,
+                completion_tokens=5,
+                tool_calls=[LlmToolCall(tool_name="home.lights.on", arguments={"area": "dining_room"})],
+            )
+        return LlmResponse(
+            text='{"route":"home_automation","confidence":0.92,"reason":"home control"}',
+            prompt_tokens=6,
+            completion_tokens=5,
+        )
+
+    def health_meta(self):
+        return {"provider": self.name}
+
+
+def _test_config() -> AppConfig:
+    return AppConfig(
+        ha_bridge_url="http://127.0.0.1:1",
+        ha_context_enabled=False,
+        llm_enabled=True,
+        llm_provider="ollama",
+        llm_model="deepseek-r1:1.5b",
+        llm_timeout_seconds=1.0,
+        agent_action_timeout_seconds=0.2,
+        agent_max_plan_steps=3,
+        agent_candidate_tool_limit=20,
+        agent_trace_max_items=50,
+    )
+
+
+def _inject_catalog_with_light_on(service: AgentService) -> None:
+    rows = [
+        {
+            "tool_name": "home.lights.on",
+            "description": "Turn on lights by area",
+            "strategy": "light_area",
+            "domain": "light",
+            "service": "turn_on",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
         }
-        names = self.catalog.candidate_tool_names(
-            route_agent="home_automation_agent",
-            role="operator",
-            runtime_env="home",
-            session_id="s1",
-            user_area="study",
-            ha_context=ha_context,
-            is_role_allowed=lambda _role, _tool: True,
-            limit=20,
+    ]
+    service.catalog._specs = service.catalog._build_specs_from_rows(rows)
+    service.catalog._catalog_source = "bridge"
+    service.catalog._api_endpoints = {("POST", "/v1/tools/call")}
+    service.catalog.refresh = lambda force=False: None
+    service.permissions.set_whitelist(service.catalog.enabled_tool_names())
+
+
+class TestAgentLlmStrictMode(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_mode_llm_disabled_returns_503(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = None
+
+        req = AgentRespondRequest(text="打开餐厅灯", metadata={"interaction_mode": "agent"})
+        with self.assertRaises(AgentRuntimeError) as cm:
+            await service.respond(req)
+
+        self.assertEqual(503, cm.exception.status_code)
+        self.assertEqual("llm_unreachable", cm.exception.payload.get("error_code"))
+        self.assertEqual("intent_router", cm.exception.payload.get("stage"))
+
+    async def test_chat_mode_timeout_returns_504(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _TimeoutLlmProvider()
+
+        req = AgentRespondRequest(text="你好", metadata={"interaction_mode": "chat"})
+        with self.assertRaises(AgentRuntimeError) as cm:
+            await service.respond(req)
+
+        self.assertEqual(504, cm.exception.status_code)
+        self.assertEqual("llm_timeout", cm.exception.payload.get("error_code"))
+        self.assertEqual("chat", cm.exception.payload.get("stage"))
+
+    async def test_agent_mode_uses_llm_tool_router(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _HappyPathLlmProvider()
+        _inject_catalog_with_light_on(service)
+        service.executor.execute = AsyncMock(
+            return_value=[
+                {
+                    "tool_name": "home.lights.on",
+                    "arguments": {"area": "dining_room"},
+                    "success": True,
+                    "message": "HA call succeeded",
+                    "trace_id": "test-trace",
+                    "executed": True,
+                }
+            ]
         )
-        self.assertTrue(any(name.startswith("home.lights.") for name in names))
-        self.assertFalse(any(name.startswith("home.climate.") for name in names))
+
+        req = AgentRespondRequest(text="打开餐厅灯", metadata={"interaction_mode": "agent"})
+        resp = await service.respond(req)
+
+        self.assertEqual("llm_tool_router", resp.source)
+        self.assertIsNotNone(resp.tool_call)
+        assert resp.tool_call is not None
+        self.assertEqual("home.lights.on", resp.tool_call.tool_name)
+        self.assertEqual("dining_room", resp.tool_call.arguments.get("area"))
+        self.assertEqual("llm_tool_router", resp.source)
+
+    async def test_agent_mode_text_only_router_returns_error(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _TextOnlyToolRouterProvider()
+        _inject_catalog_with_light_on(service)
+
+        req = AgentRespondRequest(text="打开餐厅灯", metadata={"interaction_mode": "agent"})
+        with self.assertRaises(AgentRuntimeError) as cm:
+            await service.respond(req)
+
+        self.assertEqual(502, cm.exception.status_code)
+        self.assertEqual("llm_routing_failed", cm.exception.payload.get("error_code"))
+        self.assertEqual("tool_router", cm.exception.payload.get("stage"))
+
+    async def test_bridge_catalog_unavailable_returns_no_candidate_error(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _HappyPathLlmProvider()
+        service.catalog._specs = {}
+        service.catalog._catalog_source = "unavailable"
+        service.catalog._last_refresh_error = "bridge_unreachable"
+        service.catalog.refresh = lambda force=False: None
+        service.permissions.set_whitelist([])
+
+        req = AgentRespondRequest(text="打开餐厅灯", metadata={"interaction_mode": "agent"})
+        with self.assertRaises(AgentRuntimeError) as cm:
+            await service.respond(req)
+
+        self.assertEqual(502, cm.exception.status_code)
+        self.assertEqual("llm_routing_failed", cm.exception.payload.get("error_code"))
+        self.assertEqual("tool_router", cm.exception.payload.get("stage"))
+        self.assertEqual("no_candidate_tools", cm.exception.payload.get("message"))
+
+    async def test_prevalidation_blocks_unknown_tool_arguments_before_execution(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _UnknownArgsToolProvider()
+        _inject_catalog_with_light_on(service)
+        service.executor.execute = AsyncMock(return_value=[])
+
+        req = AgentRespondRequest(text="打开餐厅灯", metadata={"interaction_mode": "agent"})
+        with self.assertRaises(AgentRuntimeError) as cm:
+            await service.respond(req)
+
+        self.assertEqual(502, cm.exception.status_code)
+        self.assertEqual("llm_routing_failed", cm.exception.payload.get("error_code"))
+        self.assertEqual("tool_router", cm.exception.payload.get("stage"))
+        self.assertIn("invalid_tool_call:home.lights.on", cm.exception.payload.get("message", ""))
+        service.executor.execute.assert_not_called()
+
+    async def test_prevalidation_repair_reroutes_and_executes(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _RepairableUnknownArgsToolProvider()
+        _inject_catalog_with_light_on(service)
+        service.executor.execute = AsyncMock(
+            return_value=[
+                {
+                    "tool_name": "home.lights.on",
+                    "arguments": {"area": "dining_room"},
+                    "success": True,
+                    "message": "HA call succeeded",
+                    "trace_id": "test-trace",
+                    "executed": True,
+                }
+            ]
+        )
+
+        req = AgentRespondRequest(text="打开餐厅灯", metadata={"interaction_mode": "agent"})
+        resp = await service.respond(req)
+
+        self.assertEqual("llm_tool_router", resp.source)
+        assert resp.tool_call is not None
+        self.assertEqual("home.lights.on", resp.tool_call.tool_name)
+        self.assertEqual({"area": "dining_room"}, resp.tool_call.arguments)
+        service.executor.execute.assert_called_once()
+
+    async def test_metadata_route_is_ignored(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _KnowledgeRouteProvider()
+        decision, error, _, _ = await service._decide_intent_route(
+            session_id="s1",
+            text="这个问题是什么",
+            metadata={"route": "home_automation"},
+        )
+        self.assertIsNone(error)
+        assert decision is not None
+        self.assertEqual("knowledge_qa", decision.route)
+        self.assertEqual("llm", decision.source)
 
 
-class TestAreaSyncIntent(unittest.TestCase):
+class TestCatalogBehavior(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = ToolCatalog(
             bridge_url="http://127.0.0.1:1",
-            timeout_seconds=1.0,
+            timeout_seconds=0.2,
             refresh_interval_seconds=3600.0,
         )
-        self.service = object.__new__(AgentService)
-        self.service.catalog = self.catalog
 
-    def test_detect_area_sync_tool_call(self) -> None:
-        text = "设置区域：玄关，厨房，客厅，主卧，次卧，餐厅，书房，卫生间，走廊，删除无用区域"
-        call = self.catalog.detect_tool_call(text)
-        self.assertIsNotNone(call)
-        assert call is not None
-        self.assertEqual("home.areas.sync", call.tool_name)
-        self.assertTrue(call.arguments.get("delete_unused"))
-        self.assertEqual(
-            call.arguments.get("target_areas"),
-            ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
-        )
+    def test_rule_tool_detection_api_removed(self) -> None:
+        self.assertFalse(hasattr(self.catalog, "detect_tool_call"))
 
-    def test_area_phrase_routes_to_home_automation(self) -> None:
-        decision = self.service._rule_route_decision("帮我整理一下区域", {})
-        self.assertEqual(HOME_AUTOMATION_ROUTE, decision.route)
+    def test_detect_explicit_area_with_chinese(self) -> None:
+        self.assertEqual("dining_room", self.catalog.detect_explicit_area("我在餐厅"))
 
-    def test_detect_area_audit_tool_call(self) -> None:
-        text = (
-            "检查一下区域设备归属，"
-            "玄关，厨房，客厅，主卧，次卧，餐厅，书房，卫生间，走廊"
+    def test_validate_rejects_unknown_argument_keys(self) -> None:
+        self.catalog._specs = self.catalog._build_specs_from_rows(
+            [
+                {
+                    "tool_name": "home.lights.on",
+                    "description": "Turn on lights by area",
+                    "strategy": "light_area",
+                    "domain": "light",
+                    "service": "turn_on",
+                    "enabled": True,
+                    "default_arguments": {},
+                }
+            ]
         )
-        call = self.catalog.detect_tool_call(text)
-        self.assertIsNotNone(call)
-        assert call is not None
-        self.assertEqual("home.areas.audit", call.tool_name)
-        self.assertEqual(
-            call.arguments.get("target_areas"),
-            ["玄关", "厨房", "客厅", "主卧", "次卧", "餐厅", "书房", "卫生间", "走廊"],
-        )
+        args, error = self.catalog.validate(ToolCall(tool_name="home.lights.on", arguments={"area": "study", "foo": 1}))
+        self.assertIsNone(args)
+        self.assertEqual("invalid_arguments:unknown_argument:foo", error)
 
-    def test_detect_area_audit_without_area_keyword(self) -> None:
-        text = (
-            "检查一下玄关，厨房，客厅，主卧，"
-            "次卧，餐厅，书房，卫生间，走廊的设备归属"
+    def test_validate_no_default_area_fallback(self) -> None:
+        self.catalog._specs = self.catalog._build_specs_from_rows(
+            [
+                {
+                    "tool_name": "home.lights.off",
+                    "description": "Turn off lights by area",
+                    "strategy": "light_area",
+                    "domain": "light",
+                    "service": "turn_off",
+                    "enabled": True,
+                    "default_arguments": {},
+                }
+            ]
         )
-        call = self.catalog.detect_tool_call(text)
-        self.assertIsNotNone(call)
-        assert call is not None
-        self.assertEqual("home.areas.audit", call.tool_name)
+        args, error = self.catalog.validate(ToolCall(tool_name="home.lights.off", arguments={}))
+        self.assertIsNone(args)
+        self.assertEqual("invalid_arguments:area or entity_id is required", error)
 
-    def test_detect_area_assign_tool_call(self) -> None:
-        text = (
-            "把玄关、厨房、客厅、主卧、次卧、"
-            "餐厅、书房、卫生间、走廊的未分配设备按建议批量归类"
+    def test_validate_does_not_merge_internal_default_arguments(self) -> None:
+        self.catalog._specs = self.catalog._build_specs_from_rows(
+            [
+                {
+                    "tool_name": "home.lights.on",
+                    "description": "Turn on lights by area",
+                    "strategy": "light_area",
+                    "domain": "light",
+                    "service": "turn_on",
+                    "enabled": True,
+                    "default_arguments": {
+                        "area": "living_room",
+                        "area_entity_map": {"living_room": "light.living_room"},
+                    },
+                }
+            ]
         )
-        call = self.catalog.detect_tool_call(text)
-        self.assertIsNotNone(call)
-        assert call is not None
-        self.assertEqual("home.areas.assign", call.tool_name)
-        self.assertTrue(call.arguments.get("only_with_suggestion"))
+        args, error = self.catalog.validate(ToolCall(tool_name="home.lights.on", arguments={"area": "dining_room"}))
+        self.assertIsNone(error)
+        assert args is not None
+        self.assertEqual("dining_room", args.get("area"))
+        self.assertNotIn("area_entity_map", args)
+
+
+class TestHttpSemantics(unittest.TestCase):
+    def test_http_error_mapping(self) -> None:
+        from app.main import app, service
+
+        async def _fake_respond(_req):
+            raise AgentRuntimeError(
+                status_code=503,
+                payload={
+                    "error_code": "llm_unreachable",
+                    "message": "ollama_unreachable: simulated",
+                    "stage": "tool_router",
+                    "trace_id": "trace-x",
+                    "provider": "ollama",
+                    "model": "deepseek-r1:1.5b",
+                },
+            )
+
+        original = service.respond
+        service.respond = _fake_respond
+        try:
+            client = TestClient(app)
+            resp = client.post("/v1/agent/respond", json={"text": "打开餐厅灯", "metadata": {"interaction_mode": "agent"}})
+            self.assertEqual(503, resp.status_code)
+            body = resp.json()
+            self.assertEqual("llm_unreachable", body["detail"]["error_code"])
+            self.assertEqual("tool_router", body["detail"]["stage"])
+        finally:
+            service.respond = original
 
 
 if __name__ == "__main__":

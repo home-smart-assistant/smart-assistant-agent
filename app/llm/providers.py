@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import json
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -90,8 +90,19 @@ class OllamaProvider(LlmProvider):
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 resp = await client.post(f"{self.base_url}/api/chat", json=payload)
                 if resp.status_code >= 400:
+                    compat = await self._tool_router_compat_if_needed(
+                        client=client,
+                        status_code=resp.status_code,
+                        messages=messages,
+                        tools=tools,
+                        model=selected_model,
+                    )
+                    if compat is not None:
+                        return compat
                     return LlmResponse(text=None, error=f"ollama_status_{resp.status_code}")
                 data = resp.json()
+        except httpx.TimeoutException as ex:
+            return LlmResponse(text=None, error=f"ollama_timeout: {ex}")
         except Exception as ex:
             return LlmResponse(text=None, error=f"ollama_unreachable: {ex}")
 
@@ -106,6 +117,8 @@ class OllamaProvider(LlmProvider):
             parsed_tool_calls = parse_ollama_tool_calls(message)
         if not content:
             content = str(data.get("response", "")).strip()
+        if not parsed_tool_calls and content:
+            parsed_tool_calls = parse_tool_calls_from_text(content)
         if not content and not parsed_tool_calls:
             return LlmResponse(text=None, error="ollama_empty_response")
 
@@ -115,6 +128,69 @@ class OllamaProvider(LlmProvider):
         prompt_eval = int(data.get("prompt_eval_count", 0) or 0)
         if prompt_eval > 0:
             prompt_tokens = prompt_eval
+
+        return LlmResponse(
+            text=content,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            tool_calls=parsed_tool_calls,
+        )
+
+    async def _tool_router_compat_if_needed(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        status_code: int,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, object]] | None,
+        model: str,
+    ) -> LlmResponse | None:
+        # Some local models reject native tools payload with HTTP 400.
+        # In that case, keep routing strictly LLM-driven by asking for JSON tool_calls.
+        if status_code != 400 or not tools:
+            return None
+
+        compat_messages = build_ollama_tool_router_compat_messages(messages, tools)
+        compat_payload = {
+            "model": model,
+            "messages": compat_messages,
+            "stream": False,
+            "format": "json",
+            "options": {"temperature": 0},
+        }
+        try:
+            compat_resp = await client.post(f"{self.base_url}/api/chat", json=compat_payload)
+        except httpx.TimeoutException as ex:
+            return LlmResponse(text=None, error=f"ollama_timeout: {ex}")
+        except Exception as ex:
+            return LlmResponse(text=None, error=f"ollama_unreachable: {ex}")
+
+        if compat_resp.status_code >= 400:
+            return None
+
+        data = compat_resp.json()
+        if not isinstance(data, dict):
+            return LlmResponse(text=None, error="ollama_invalid_payload")
+
+        content = ""
+        parsed_tool_calls: list[LlmToolCall] = []
+        message = data.get("message")
+        if isinstance(message, dict):
+            content = str(message.get("content", "")).strip()
+            parsed_tool_calls = parse_ollama_tool_calls(message)
+        if not content:
+            content = str(data.get("response", "")).strip()
+        if not parsed_tool_calls and content:
+            parsed_tool_calls = parse_tool_calls_from_text(content)
+        if not content and not parsed_tool_calls:
+            return LlmResponse(text=None, error="ollama_empty_response")
+
+        completion_tokens = int(data.get("eval_count", 0) or 0)
+        if completion_tokens <= 0:
+            completion_tokens = estimate_text_tokens(content)
+        prompt_tokens = int(data.get("prompt_eval_count", 0) or 0)
+        if prompt_tokens <= 0:
+            prompt_tokens = estimate_message_tokens(compat_messages)
 
         return LlmResponse(
             text=content,
@@ -177,6 +253,8 @@ class OpenAiCompatibleProvider(LlmProvider):
                 if resp.status_code >= 400:
                     return LlmResponse(text=None, error=f"openai_compatible_status_{resp.status_code}")
                 data = resp.json()
+        except httpx.TimeoutException as ex:
+            return LlmResponse(text=None, error=f"openai_compatible_timeout: {ex}")
         except Exception as ex:
             return LlmResponse(text=None, error=f"openai_compatible_unreachable: {ex}")
 
@@ -312,3 +390,149 @@ def parse_arguments(raw: object) -> dict[str, object]:
         if isinstance(data, dict):
             return data
     return {}
+
+
+def build_ollama_tool_router_compat_messages(
+    messages: list[dict[str, str]],
+    tools: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    allowed_tools: list[dict[str, Any]] = []
+    for row in tools:
+        if not isinstance(row, dict):
+            continue
+        function = row.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name", "")).strip()
+        if not name:
+            continue
+        parameters = function.get("parameters", {})
+        allowed_arguments: list[str] = []
+        required_arguments: list[str] = []
+        if isinstance(parameters, dict):
+            props = parameters.get("properties")
+            if isinstance(props, dict):
+                allowed_arguments = sorted(str(key) for key in props.keys() if isinstance(key, str))
+            required = parameters.get("required")
+            if isinstance(required, list):
+                required_arguments = [str(item) for item in required if isinstance(item, str)]
+        allowed_tools.append(
+            {
+                "tool_name": name,
+                "description": str(function.get("description", "")).strip(),
+                "parameters": parameters,
+                "allowed_arguments": allowed_arguments,
+                "required_arguments": required_arguments,
+            }
+        )
+
+    compat_instruction = (
+        "Native tool calling is unavailable for this model. "
+        "You must output strict JSON only, no markdown. "
+        'Schema: {"tool_calls":[{"tool_name":"<allowed_tool_name>","arguments":{...}}]}. '
+        "For each selected tool, arguments must use only keys in allowed_arguments. "
+        "Never emit unknown keys. "
+        "Never include internal mapping fields such as area_entity_map. "
+        'If no tool applies, output {"tool_calls":[]}.'
+    )
+
+    compat_tools = "Allowed tools JSON:\n" + json.dumps(
+        allowed_tools,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return [
+        {"role": "system", "content": compat_instruction},
+        {"role": "system", "content": compat_tools},
+        *messages,
+    ]
+
+
+def parse_tool_calls_from_text(text: str) -> list[LlmToolCall]:
+    raw = text.strip()
+    if not raw:
+        return []
+
+    candidates: list[str] = [raw]
+    unfenced = _strip_markdown_fence(raw)
+    if unfenced and unfenced not in candidates:
+        candidates.append(unfenced)
+
+    for chunk in (raw, unfenced):
+        extracted = _extract_json_slice(chunk)
+        if extracted and extracted not in candidates:
+            candidates.append(extracted)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        tool_calls = _parse_tool_calls_from_payload(parsed)
+        if tool_calls:
+            return tool_calls
+    return []
+
+
+def _parse_tool_calls_from_payload(payload: object) -> list[LlmToolCall]:
+    if isinstance(payload, dict):
+        if "tool_calls" in payload:
+            return _parse_tool_calls_from_payload(payload.get("tool_calls"))
+        call = _parse_single_tool_call(payload)
+        return [call] if call is not None else []
+
+    if isinstance(payload, list):
+        parsed: list[LlmToolCall] = []
+        for row in payload:
+            call = _parse_single_tool_call(row)
+            if call is not None:
+                parsed.append(call)
+        return parsed
+
+    return []
+
+
+def _parse_single_tool_call(payload: object) -> LlmToolCall | None:
+    if not isinstance(payload, dict):
+        return None
+
+    name = str(payload.get("tool_name", "")).strip()
+    arguments: dict[str, object] = parse_arguments(payload.get("arguments"))
+
+    if not name:
+        name = str(payload.get("name", "")).strip()
+    if not name:
+        function = payload.get("function")
+        if isinstance(function, dict):
+            name = str(function.get("name", "")).strip()
+            if not arguments:
+                arguments = parse_arguments(function.get("arguments"))
+
+    if not name:
+        return None
+    return LlmToolCall(tool_name=name, arguments=arguments)
+
+
+def _strip_markdown_fence(text: str) -> str:
+    raw = text.strip()
+    if not raw.startswith("```"):
+        return raw
+    lines = raw.splitlines()
+    if len(lines) >= 2 and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1]).strip()
+    return raw
+
+
+def _extract_json_slice(text: str) -> str | None:
+    if not text:
+        return None
+    object_start = text.find("{")
+    object_end = text.rfind("}")
+    if object_start >= 0 and object_end > object_start:
+        return text[object_start : object_end + 1].strip()
+
+    array_start = text.find("[")
+    array_end = text.rfind("]")
+    if array_start >= 0 and array_end > array_start:
+        return text[array_start : array_end + 1].strip()
+    return None

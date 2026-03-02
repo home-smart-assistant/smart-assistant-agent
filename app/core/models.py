@@ -27,7 +27,7 @@ class AgentRespondRequest(BaseModel):
 class AgentRespondResponse(BaseModel):
     session_id: str
     reply_text: str
-    source: str = "rule_chat"
+    source: str = "llm_tool_router"
     trace_id: str | None = None
     tool_call: ToolCall | None = None
     tool_result: dict[str, Any] | None = None
