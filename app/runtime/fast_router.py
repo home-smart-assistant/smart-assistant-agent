@@ -147,7 +147,14 @@ class FastRouter:
                 args_base: dict[str, Any] = {}
                 if delay_seconds is not None:
                     args_base["delay_seconds"] = delay_seconds
-                if strategy in {"light_area", "cover_area", "climate_area", "climate_area_temperature"}:
+                if strategy in {
+                    "light_area",
+                    "cover_area",
+                    "climate_area",
+                    "climate_area_temperature",
+                    "switch_area",
+                    "fan_area",
+                }:
                     if not areas:
                         unresolved.append(f"Missing area in clause '{clause}'.")
                         reasons.append("area_missing")
@@ -264,6 +271,18 @@ class FastRouter:
             )
         ):
             return "climate"
+        if any(word in clause for word in ("\u6D74\u9738", "bath_heater", "bath heater")):
+            return "switch"
+        if any(
+            word in clause
+            for word in (
+                "\u51C0\u5316\u5668",
+                "\u7A7A\u6C14\u51C0\u5316",
+                "air purifier",
+                "purifier",
+            )
+        ):
+            return "fan"
         if any(word in clause for word in ("\u7A97\u5E18", "cover", "curtain")):
             return "cover"
         if any(word in clause for word in ("\u573A\u666F", "\u6A21\u5F0F", "scene", "mode")):
@@ -306,6 +325,11 @@ class FastRouter:
             if any(word in clause for word in ("\u5173\u95ED", "\u5173\u4E0A", "close")):
                 return "turn_off"
             if any(word in clause for word in ("\u6253\u5F00", "\u5F00\u542F", "open", "\u5F00")):
+                return "turn_on"
+        if domain in {"switch", "fan"}:
+            if any(word in clause for word in ("\u5173\u95ED", "\u5173\u6389", "turn off", "\u5173")):
+                return "turn_off"
+            if any(word in clause for word in ("\u6253\u5F00", "\u5F00\u542F", "turn on", "\u5F00")):
                 return "turn_on"
         return None
 
@@ -400,12 +424,12 @@ class FastRouter:
             score += 30
 
         if action == "turn_on":
-            if strategy in {"light_area", "cover_area", "climate_area"}:
+            if strategy in {"light_area", "cover_area", "climate_area", "switch_area", "fan_area"}:
                 score += 20
             if any(word in service for word in ("turn_on", "open")) or any(word in tool_name for word in (".on", ".open")):
                 score += 30
         elif action == "turn_off":
-            if strategy in {"light_area", "cover_area", "climate_area"}:
+            if strategy in {"light_area", "cover_area", "climate_area", "switch_area", "fan_area"}:
                 score += 20
             if any(word in service for word in ("turn_off", "close")) or any(word in tool_name for word in (".off", ".close")):
                 score += 30

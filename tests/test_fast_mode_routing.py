@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from app.core.config import AppConfig
 from app.core.models import AgentRespondRequest
@@ -122,12 +122,77 @@ def _inject_catalog(service: AgentService) -> None:
             "allowed_agents": ["home_automation_agent"],
             "environment_tags": ["home", "prod"],
         },
+        {
+            "tool_name": "home.bath_heater.on",
+            "description": "Turn on bath heater by area",
+            "strategy": "light_area",
+            "domain": "switch",
+            "service": "turn_on",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+        {
+            "tool_name": "home.bath_heater.off",
+            "description": "Turn off bath heater by area",
+            "strategy": "light_area",
+            "domain": "switch",
+            "service": "turn_off",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+        {
+            "tool_name": "home.air_purifier.on",
+            "description": "Turn on purifier by area",
+            "strategy": "light_area",
+            "domain": "fan",
+            "service": "turn_on",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+        {
+            "tool_name": "home.air_purifier.off",
+            "description": "Turn off purifier by area",
+            "strategy": "light_area",
+            "domain": "fan",
+            "service": "turn_off",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
     ]
     service.catalog._specs = service.catalog._build_specs_from_rows(rows)
     service.catalog._catalog_source = "bridge"
     service.catalog._api_endpoints = {("POST", "/v1/tools/call")}
     service.catalog.refresh = lambda force=False: None
     service.permissions.set_whitelist(service.catalog.enabled_tool_names())
+
+
+def _build_service(config: AppConfig) -> AgentService:
+    with patch("app.tools.catalog.ToolCatalog.refresh", autospec=True, return_value=None):
+        return AgentService(config)
+
+
+async def _echo_execute(tool_calls, trace_id=None, role=None, metadata=None):
+    rows = []
+    for call in tool_calls:
+        rows.append(
+            {
+                "tool_name": call.tool_name,
+                "arguments": dict(call.arguments),
+                "success": True,
+                "message": "ok",
+                "trace_id": trace_id or "trace-x",
+                "executed": True,
+            }
+        )
+    return rows
 
 
 def _inject_ambiguous_light_on_catalog(service: AgentService) -> None:
@@ -164,7 +229,7 @@ def _inject_ambiguous_light_on_catalog(service: AgentService) -> None:
 
 class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
     async def test_fast_mode_disabled_returns_friendly_response(self) -> None:
-        service = AgentService(_test_config_fast_disabled())
+        service = _build_service(_test_config_fast_disabled())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(return_value=[])
@@ -177,7 +242,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         service.executor.execute.assert_not_called()
 
     async def test_fast_mode_does_not_call_llm(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(return_value=[])
@@ -185,7 +250,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         await service.respond(AgentRespondRequest(text="turn on living room light", metadata={"interaction_mode": "fast"}))
 
     async def test_single_light_on(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(
@@ -210,7 +275,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("living_room", resp.tool_call.arguments.get("area"))
 
     async def test_batch_multi_area(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(
@@ -226,7 +291,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, len(resp.tool_results))
 
     async def test_multi_clause(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(
@@ -243,7 +308,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, len(resp.tool_results))
 
     async def test_temperature_extract(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(
@@ -265,7 +330,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(26, resp.tool_call.arguments.get("temperature"))
 
     async def test_delay_extract(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(
@@ -287,7 +352,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(3.0, resp.tool_call.arguments.get("delay_seconds"))
 
     async def test_missing_area_returns_200_and_no_execute(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(return_value=[])
@@ -298,7 +363,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         service.executor.execute.assert_not_called()
 
     async def test_partial_success(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_catalog(service)
         service.executor.execute = AsyncMock(
@@ -315,7 +380,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(resp.tool_results))
 
     async def test_ambiguous_tool_returns_200_and_no_execute(self) -> None:
-        service = AgentService(_test_config())
+        service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
         _inject_ambiguous_light_on_catalog(service)
         service.executor.execute = AsyncMock(return_value=[])
@@ -326,6 +391,72 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("fast_rule_router", resp.source)
         self.assertEqual(0, len(resp.tool_results))
         service.executor.execute.assert_not_called()
+
+    async def test_cn_area_matrix_light_cases_no_bridge(self) -> None:
+        service = _build_service(_test_config())
+        service.llm_provider = _MustNotCallLlmProvider()
+        _inject_catalog(service)
+        service.executor.execute = AsyncMock(side_effect=_echo_execute)
+        cases = [
+            ("\u536B\u751F\u95F4", "bathroom"),
+            ("\u53A8\u623F", "kitchen"),
+            ("\u9910\u5385", "dining_room"),
+            ("\u7384\u5173", "xuan_guan"),
+            ("\u4E66\u623F", "study"),
+            ("\u5BA2\u5385", "living_room"),
+            ("\u4E3B\u5367", "master_bedroom"),
+            ("\u6B21\u5367", "guest_bedroom"),
+            ("\u9633\u53F0", "balcony"),
+            ("\u8D70\u5ECA", "corridor"),
+        ]
+        for area_cn, area_key in cases:
+            with self.subTest(area=area_cn):
+                req = AgentRespondRequest(
+                    text=f"\u6253\u5F00{area_cn}\u706F",
+                    metadata={"interaction_mode": "fast"},
+                )
+                resp = await service.respond(req)
+                self.assertEqual("fast_rule_router", resp.source)
+                self.assertTrue(resp.tool_results)
+                self.assertEqual("home.lights.on", resp.tool_results[0]["tool_name"])
+                self.assertEqual(area_key, resp.tool_results[0]["arguments"].get("area"))
+
+    async def test_cn_device_cases_bath_heater_and_purifier(self) -> None:
+        service = _build_service(_test_config())
+        service.llm_provider = _MustNotCallLlmProvider()
+        _inject_catalog(service)
+        service.executor.execute = AsyncMock(side_effect=_echo_execute)
+        cases = [
+            ("\u6253\u5F00\u536B\u751F\u95F4\u6D74\u9738", "home.bath_heater.on", "bathroom"),
+            ("\u5173\u95ED\u536B\u751F\u95F4\u6D74\u9738", "home.bath_heater.off", "bathroom"),
+            ("\u6253\u5F00\u5BA2\u5385\u7A7A\u6C14\u51C0\u5316\u5668", "home.air_purifier.on", "living_room"),
+            ("\u5173\u95ED\u4E66\u623F\u7A7A\u6C14\u51C0\u5316\u5668", "home.air_purifier.off", "study"),
+            ("\u6253\u5F00\u4E3B\u5367\u7A97\u5E18", "home.covers.open", "master_bedroom"),
+            ("\u5173\u95ED\u6B21\u5367\u7A97\u5E18", "home.covers.close", "guest_bedroom"),
+            ("\u628A\u9910\u5385\u7A7A\u8C03\u8BBE\u523026\u5EA6", "home.climate.set_temperature", "dining_room"),
+        ]
+        for text, tool_name, area in cases:
+            with self.subTest(text=text):
+                resp = await service.respond(AgentRespondRequest(text=text, metadata={"interaction_mode": "fast"}))
+                self.assertEqual("fast_rule_router", resp.source)
+                self.assertTrue(resp.tool_results)
+                self.assertEqual(tool_name, resp.tool_results[0]["tool_name"])
+                self.assertEqual(area, resp.tool_results[0]["arguments"].get("area"))
+
+    async def test_unsupported_device_returns_friendly_unresolved(self) -> None:
+        service = _build_service(_test_config())
+        service.llm_provider = _MustNotCallLlmProvider()
+        _inject_catalog(service)
+        service.executor.execute = AsyncMock(side_effect=_echo_execute)
+
+        resp = await service.respond(
+            AgentRespondRequest(text="\u6253\u5F00\u5BA2\u5385\u7535\u89C6", metadata={"interaction_mode": "fast"})
+        )
+        self.assertEqual("fast_rule_router", resp.source)
+        self.assertEqual(0, len(resp.tool_results))
+        parse = resp.security.get("fast_parse", {})
+        self.assertFalse(parse.get("matched"))
+        self.assertTrue(parse.get("unresolved_parts"))
 
 
 if __name__ == "__main__":

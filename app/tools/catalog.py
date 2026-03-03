@@ -106,6 +106,8 @@ class ToolCatalog:
                         "tool_name": spec.tool_name,
                         "description": spec.description,
                         "strategy": spec.strategy,
+                        "domain": spec.domain,
+                        "service": spec.service,
                         "enabled": spec.enabled,
                         "tool_version": spec.tool_version,
                         "schema_version": spec.schema_version,
