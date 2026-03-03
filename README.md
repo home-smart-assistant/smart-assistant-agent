@@ -87,6 +87,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8091
 ## CI/CD (Deploy to 192.168.3.103)
 - Workflow: `.github/workflows/cicd-deploy.yml`
 - Trigger: push to `main` or manual `workflow_dispatch`
+- Deploy script enforces `OLLAMA_BASE_URL` to `http://192.168.3.101:11434` by default (LLM host on machine `101`)
 - Output image:
   - `ghcr.io/home-smart-assistant/smart-assistant-agent:main`
   - `ghcr.io/home-smart-assistant/smart-assistant-agent:<commit_sha>`
@@ -96,4 +97,5 @@ uvicorn app.main:app --host 0.0.0.0 --port 8091
   - Deploy: `[self-hosted, Linux, X64, deploy-linux]` (recommended on `192.168.3.103`)
 - Optional config:
   - Repository variable `DEPLOY_PATH` (default `/opt/smart-assistant`)
+  - Repository variable `DEPLOY_OLLAMA_BASE_URL` (override default `http://192.168.3.101:11434`)
   - `GHCR_USERNAME` + `GHCR_TOKEN` only if your package policy requires explicit login

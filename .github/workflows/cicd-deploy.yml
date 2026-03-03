@@ -74,6 +74,7 @@ jobs:
       - name: Deploy service on self-hosted runner
         env:
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_OLLAMA_BASE_URL: ${{ vars.DEPLOY_OLLAMA_BASE_URL }}
           IMAGE_TAG: ${{ github.sha }}
           SERVICE_NAME: smart_assistant_agent
           SERVICE_TAG_KEY: AGENT_IMAGE_TAG
@@ -120,6 +121,9 @@ jobs:
             fi
           }
           set_env "$SERVICE_TAG_KEY" "$IMAGE_TAG"
+          OLLAMA_BASE_URL_VALUE="${DEPLOY_OLLAMA_BASE_URL:-http://192.168.3.101:11434}"
+          set_env "OLLAMA_BASE_URL" "$OLLAMA_BASE_URL_VALUE"
+          echo "Configured OLLAMA_BASE_URL=$OLLAMA_BASE_URL_VALUE"
 
           retry 6 8 docker compose pull "$SERVICE_NAME"
           retry 3 5 docker compose up -d --no-deps "$SERVICE_NAME"
