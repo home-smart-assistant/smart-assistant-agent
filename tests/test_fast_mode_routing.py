@@ -433,6 +433,7 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
             ("\u5173\u95ED\u4E66\u623F\u7A7A\u6C14\u51C0\u5316\u5668", "home.air_purifier.off", "study"),
             ("\u6253\u5F00\u4E3B\u5367\u7A97\u5E18", "home.covers.open", "master_bedroom"),
             ("\u5173\u95ED\u6B21\u5367\u7A97\u5E18", "home.covers.close", "guest_bedroom"),
+            ("\u5173\u95ED\u9633\u53F0\u7EB1\u5E18", "home.covers.close", "balcony"),
             ("\u628A\u9910\u5385\u7A7A\u8C03\u8BBE\u523026\u5EA6", "home.climate.set_temperature", "dining_room"),
         ]
         for text, tool_name, area in cases:

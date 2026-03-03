@@ -283,7 +283,23 @@ class FastRouter:
             )
         ):
             return "fan"
-        if any(word in clause for word in ("\u7A97\u5E18", "cover", "curtain")):
+        if any(
+            word in clause
+            for word in (
+                "\u7A97\u5E18",
+                "\u7EB1\u5E18",
+                "\u5E18\u5B50",
+                "\u5377\u5E18",
+                "\u767E\u53F6\u5E18",
+                "\u906E\u5149\u5E18",
+                "cover",
+                "curtain",
+                "blind",
+                "blinds",
+                "shade",
+                "shades",
+            )
+        ):
             return "cover"
         if any(word in clause for word in ("\u573A\u666F", "\u6A21\u5F0F", "scene", "mode")):
             return "scene"
@@ -322,9 +338,9 @@ class FastRouter:
             if any(word in clause for word in ("\u6253\u5F00", "\u5F00\u542F", "turn on", "\u5F00")):
                 return "turn_on"
         if domain == "cover":
-            if any(word in clause for word in ("\u5173\u95ED", "\u5173\u4E0A", "close")):
+            if any(word in clause for word in ("\u5173\u95ED", "\u5173\u4E0A", "\u62C9\u4E0A", "\u964D\u4E0B", "close")):
                 return "turn_off"
-            if any(word in clause for word in ("\u6253\u5F00", "\u5F00\u542F", "open", "\u5F00")):
+            if any(word in clause for word in ("\u6253\u5F00", "\u5F00\u542F", "\u62C9\u5F00", "\u5347\u8D77", "open", "\u5F00")):
                 return "turn_on"
         if domain in {"switch", "fan"}:
             if any(word in clause for word in ("\u5173\u95ED", "\u5173\u6389", "turn off", "\u5173")):
