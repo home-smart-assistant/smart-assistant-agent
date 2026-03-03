@@ -107,6 +107,11 @@ class MetricsStore:
         self._memory_recall_hits_total = 0
         self._memory_recall_latency_ms_total = 0.0
         self._memory_remember_failures = 0
+        self._fast_requests_total = 0
+        self._fast_parse_success_total = 0
+        self._fast_partial_success_total = 0
+        self._fast_parse_latency_ms_total = 0.0
+        self._fast_tool_calls_total = 0
 
     def record_request(self, source: str) -> None:
         with self._lock:
@@ -139,12 +144,34 @@ class MetricsStore:
         with self._lock:
             self._memory_remember_failures += 1
 
+    def record_fast_request(
+        self,
+        *,
+        matched: bool,
+        partial_success: bool,
+        tool_calls_count: int,
+        latency_ms: float,
+    ) -> None:
+        with self._lock:
+            self._fast_requests_total += 1
+            if matched:
+                self._fast_parse_success_total += 1
+            if partial_success:
+                self._fast_partial_success_total += 1
+            self._fast_tool_calls_total += max(0, int(tool_calls_count))
+            self._fast_parse_latency_ms_total += max(0.0, float(latency_ms))
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             uptime = max(0.0, time.time() - self._started_at)
             avg_recall_latency = (
                 self._memory_recall_latency_ms_total / self._memory_recall_requests
                 if self._memory_recall_requests > 0
+                else 0.0
+            )
+            avg_fast_latency = (
+                self._fast_parse_latency_ms_total / self._fast_requests_total
+                if self._fast_requests_total > 0
                 else 0.0
             )
             return {
@@ -164,6 +191,14 @@ class MetricsStore:
                     "recall_latency_ms_total": self._memory_recall_latency_ms_total,
                     "recall_latency_ms_avg": avg_recall_latency,
                     "remember_failures": self._memory_remember_failures,
+                },
+                "fast_mode": {
+                    "fast_requests_total": self._fast_requests_total,
+                    "fast_parse_success_total": self._fast_parse_success_total,
+                    "fast_partial_success_total": self._fast_partial_success_total,
+                    "fast_parse_latency_ms_total": self._fast_parse_latency_ms_total,
+                    "fast_parse_latency_ms_avg": avg_fast_latency,
+                    "fast_tool_calls_total": self._fast_tool_calls_total,
                 },
                 "errors_total": self._error_total,
             }

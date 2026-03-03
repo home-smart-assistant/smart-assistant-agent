@@ -201,6 +201,11 @@ components:
           type: string
         metadata:
           type: object
+          description: |
+            Request metadata. Use `interaction_mode` to control runtime path:
+            - `fast`: rule-based router, no LLM call
+            - `agent`: LLM tool routing + execution
+            - `chat`: chat-only
           additionalProperties: true
     AgentRespondResponse:
       type: object
@@ -211,6 +216,7 @@ components:
           type: string
         source:
           type: string
+          description: Response source, e.g. `fast_rule_router` | `llm_tool_router` | `<provider>_chat`
         trace_id:
           type: string
           nullable: true

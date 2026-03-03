@@ -40,7 +40,9 @@ Strict behavior:
 - `GET /v1/agent/metrics`
 - `GET /v1/agent/models`
 - `GET /ui` (lightweight ChatGPT-style web chat UI for calling `/v1/agent/respond`)
-  - UI supports `mode=agent|chat` (default `agent`), and optional per-request `metadata.llm_model`.
+  - UI supports `mode=fast|agent|chat` (default `fast`).
+  - In `fast` mode, request is routed by rule-based parser with no LLM call.
+  - Optional per-request `metadata.llm_model` is used only in non-fast modes.
 
 `POST /v1/agent/respond` error semantics in strict mode:
 - `503`: `llm_unreachable`

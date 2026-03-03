@@ -254,7 +254,8 @@
         <label>
           Mode
           <select id="interaction-mode">
-            <option value="agent" selected>agent</option>
+            <option value="fast" selected>fast</option>
+            <option value="agent">agent</option>
             <option value="chat">chat</option>
           </select>
         </label>
@@ -276,7 +277,8 @@
       </div>
 
       <div class="hint">
-        Mode `agent` can execute tools; mode `chat` is conversation only.
+        Mode `fast` uses local rule parsing (no model call, lower latency).
+        Mode `agent` uses LLM routing + tool execution; mode `chat` is conversation only.
         Response details (trace/tool/plan) are shown under assistant messages.
         If request fails, error details are shown as a red message.
         For local 7b/8b models, use timeout 120-300s.
@@ -336,12 +338,12 @@
       const metadata = {};
       const deviceId = deviceIdEl.value.trim();
       const homeId = homeIdEl.value.trim();
-      const interactionMode = interactionModeEl.value.trim() || "agent";
+      const interactionMode = interactionModeEl.value.trim() || "fast";
       const modelName = modelNameEl.value.trim();
       if (deviceId) metadata.device_id = deviceId;
       if (homeId) metadata.home_id = homeId;
       metadata.interaction_mode = interactionMode;
-      if (modelName) metadata.llm_model = modelName;
+      if (interactionMode !== "fast" && modelName) metadata.llm_model = modelName;
 
       const payload = {
         text,
@@ -516,6 +518,13 @@
       }
     }
 
+    function syncModeUI() {
+      const mode = interactionModeEl.value.trim() || "fast";
+      const disableModel = mode === "fast";
+      modelNameEl.disabled = disableModel;
+      modelNameEl.title = disableModel ? "Fast mode does not use LLM model selection." : "";
+    }
+
     sendBtn.addEventListener("click", send);
 
     promptEl.addEventListener("keydown", (evt) => {
@@ -535,7 +544,9 @@
       appendSystem("Chat cleared.");
     });
 
+    interactionModeEl.addEventListener("change", syncModeUI);
     loadModels();
+    syncModeUI();
     appendSystem("Ready. Send a message to call /v1/agent/respond.");
   </script>
 </body>

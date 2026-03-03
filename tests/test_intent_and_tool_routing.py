@@ -171,6 +171,16 @@ class _TimedSequenceRepairProvider:
         return {"provider": self.name}
 
 
+class _MustNotCallLlmProvider:
+    name = "ollama"
+
+    async def chat(self, messages, tools=None, model=None):
+        raise AssertionError("LLM chat must not be called in fast mode")
+
+    def health_meta(self):
+        return {"provider": self.name}
+
+
 def _test_config() -> AppConfig:
     return AppConfig(
         ha_bridge_url="http://127.0.0.1:1",
@@ -413,6 +423,28 @@ class TestAgentLlmStrictMode(unittest.IsolatedAsyncioTestCase):
         assert decision is not None
         self.assertEqual("knowledge_qa", decision.route)
         self.assertEqual("llm", decision.source)
+
+    async def test_fast_mode_skips_llm_and_returns_fast_source(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _MustNotCallLlmProvider()
+        _inject_catalog_with_light_on(service)
+        service.executor.execute = AsyncMock(
+            return_value=[
+                {
+                    "tool_name": "home.lights.on",
+                    "arguments": {"area": "dining_room"},
+                    "success": True,
+                    "message": "HA call succeeded",
+                    "trace_id": "test-trace",
+                    "executed": True,
+                }
+            ]
+        )
+
+        req = AgentRespondRequest(text="打开餐厅灯", metadata={"interaction_mode": "fast"})
+        resp = await service.respond(req)
+        self.assertEqual("fast_rule_router", resp.source)
+        self.assertEqual("fast", resp.security.get("interaction_mode"))
 
 
 class TestCatalogBehavior(unittest.TestCase):

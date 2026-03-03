@@ -92,6 +92,9 @@ class AppConfig:
     agent_router_entity_hints_timeout_seconds: float = 2.0
     agent_router_domain_prune_enabled: bool = True
     agent_router_domain_prune_min_score: int = 4
+    agent_fast_mode_enabled: bool = True
+    agent_fast_mode_allow_delay_seconds: bool = True
+    agent_fast_mode_max_calls: int = 12
     agent_tool_whitelist: tuple[str, ...] = (
         "home.lights.on",
         "home.lights.off",
@@ -227,6 +230,9 @@ class AppConfig:
             agent_router_entity_hints_timeout_seconds=env_float("AGENT_ROUTER_ENTITY_HINTS_TIMEOUT_SECONDS", 2.0),
             agent_router_domain_prune_enabled=env_bool("AGENT_ROUTER_DOMAIN_PRUNE_ENABLED", True),
             agent_router_domain_prune_min_score=env_int("AGENT_ROUTER_DOMAIN_PRUNE_MIN_SCORE", 4),
+            agent_fast_mode_enabled=env_bool("AGENT_FAST_MODE_ENABLED", True),
+            agent_fast_mode_allow_delay_seconds=env_bool("AGENT_FAST_MODE_ALLOW_DELAY_SECONDS", True),
+            agent_fast_mode_max_calls=env_int("AGENT_FAST_MODE_MAX_CALLS", 12),
             agent_tool_whitelist=whitelist,
             prompt_injection_guard_enabled=env_bool("AGENT_PROMPT_INJECTION_GUARD_ENABLED", True),
             prompt_injection_patterns=patterns,

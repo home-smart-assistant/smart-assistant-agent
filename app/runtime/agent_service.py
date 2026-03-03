@@ -27,6 +27,7 @@ from app.runtime.prompt_templates import (
     build_intent_router_system_prompt,
     build_tool_router_system_prompt,
 )
+from app.runtime.fast_router import FastRouter
 from app.tools import ToolCatalog
 
 
@@ -37,6 +38,7 @@ DEVICE_MAINTENANCE_ROUTE = "device_maintenance"
 FAMILY_SCHEDULE_ROUTE = "family_schedule"
 INTERACTION_MODE_AGENT = "agent"
 INTERACTION_MODE_CHAT = "chat"
+INTERACTION_MODE_FAST = "fast"
 ROUTE_LABELS = {
     HOME_AUTOMATION_ROUTE,
     KNOWLEDGE_QA_ROUTE,
@@ -107,6 +109,10 @@ class AgentService:
             text_encoding_strict=config.text_encoding_strict,
         )
         self.llm_provider = build_llm_provider(config)
+        self.fast_router = FastRouter(
+            max_calls=config.agent_fast_mode_max_calls,
+            allow_delay_seconds=config.agent_fast_mode_allow_delay_seconds,
+        )
         self.traces = TraceStore(max_items=config.agent_trace_max_items)
         self.metrics = MetricsStore()
         self._entity_hint_cache: dict[str, dict[str, Any]] = {}
@@ -166,6 +172,270 @@ class AgentService:
 
         recalled_docs = await self._recall_memory(session_id, text, trace_id)
         recalled_snippets = [doc.text for doc in recalled_docs]
+
+        if interaction_mode == INTERACTION_MODE_FAST:
+            if not self.config.agent_fast_mode_enabled:
+                reply_text = "当前环境未开启快速模式。"
+                plan = self._build_fast_mode_plan(has_tool_calls=False)
+                self._mark_feedback_step_completed(plan)
+                self.short_memory.add_turn(session_id, "assistant", reply_text)
+                await self._remember_turn(session_id, reply_text, {"role": "assistant"}, trace_id)
+                self.metrics.record_request("fast_rule_router")
+                self.metrics.record_fast_request(
+                    matched=False,
+                    partial_success=False,
+                    tool_calls_count=0,
+                    latency_ms=0.0,
+                )
+                final_error = context_error if context_error not in {None, "disabled"} else None
+                self.traces.finish_trace(trace_id, source="fast_rule_router", error=final_error)
+                return AgentRespondResponse(
+                    session_id=session_id,
+                    reply_text=reply_text,
+                    source="fast_rule_router",
+                    trace_id=trace_id,
+                    tool_call=None,
+                    tool_result=None,
+                    tool_results=[],
+                    plan=[self._to_plan_view(step) for step in plan.steps],
+                    security={
+                        "blocked": False,
+                        "role": role,
+                        "context_error": context_error,
+                        "route": "fast_only",
+                        "route_confidence": 1.0,
+                        "route_agent": "fast_mode",
+                        "candidate_tools": [],
+                        "interaction_mode": interaction_mode,
+                        "llm_model": active_model,
+                        "llm_model_override": bool(model_override),
+                        "llm_error": None,
+                        "router_mode": "fast",
+                        "llm_skipped": True,
+                        "fast_parse": {
+                            "matched": False,
+                            "reasons": ["fast_mode_disabled"],
+                            "unresolved_parts": ["当前环境未开启快速模式。"],
+                            "used_rules": [],
+                        },
+                    },
+                )
+
+            user_area = self._resolve_user_area(text, metadata)
+            candidate_limit = max(1, self.config.agent_candidate_tool_limit)
+            candidate_tool_names = self.catalog.candidate_tool_names(
+                route_agent=None,
+                role=role,
+                runtime_env=self.config.agent_runtime_env,
+                session_id=session_id,
+                user_area=user_area,
+                ha_context=ha_context,
+                is_role_allowed=self.permissions.is_allowed,
+                limit=candidate_limit,
+            )
+            fast_result = self.fast_router.route(
+                text=text,
+                metadata=metadata,
+                candidate_tool_names=candidate_tool_names,
+                catalog=self.catalog,
+            )
+            self.traces.add_event(
+                trace_id,
+                "fast.parse",
+                {
+                    "matched": fast_result.matched,
+                    "generated_calls": [row.tool_name for row in fast_result.tool_calls],
+                    "candidate_count": len(candidate_tool_names),
+                    "latency_ms": fast_result.trace_meta.get("latency_ms", 0.0),
+                    "used_rules": fast_result.used_rules,
+                    "reasons": fast_result.reasons,
+                    "trace": fast_result.trace_meta,
+                },
+            )
+            if fast_result.unresolved_parts:
+                self.traces.add_event(
+                    trace_id,
+                    "fast.unresolved",
+                    {"items": fast_result.unresolved_parts},
+                )
+
+            if not fast_result.tool_calls:
+                reply_text = fast_result.reply_text or "快速模式仅支持家居控制，请改成如“打开客厅灯”。"
+                plan = self._build_fast_mode_plan(has_tool_calls=False)
+                self._mark_feedback_step_completed(plan)
+                self.short_memory.add_turn(session_id, "assistant", reply_text)
+                await self._remember_turn(session_id, reply_text, {"role": "assistant"}, trace_id)
+                self.metrics.record_request("fast_rule_router")
+                self.metrics.record_fast_request(
+                    matched=False,
+                    partial_success=False,
+                    tool_calls_count=0,
+                    latency_ms=float(fast_result.trace_meta.get("latency_ms", 0.0) or 0.0),
+                )
+                final_error = context_error if context_error not in {None, "disabled"} else None
+                self.traces.finish_trace(trace_id, source="fast_rule_router", error=final_error)
+                return AgentRespondResponse(
+                    session_id=session_id,
+                    reply_text=reply_text,
+                    source="fast_rule_router",
+                    trace_id=trace_id,
+                    tool_call=None,
+                    tool_result=None,
+                    tool_results=[],
+                    plan=[self._to_plan_view(step) for step in plan.steps],
+                    security={
+                        "blocked": False,
+                        "role": role,
+                        "context_error": context_error,
+                        "route": "fast_only",
+                        "route_confidence": 1.0,
+                        "route_agent": "fast_mode",
+                        "candidate_tools": candidate_tool_names,
+                        "interaction_mode": interaction_mode,
+                        "llm_model": active_model,
+                        "llm_model_override": bool(model_override),
+                        "llm_error": None,
+                        "router_mode": "fast",
+                        "llm_skipped": True,
+                        "fast_parse": {
+                            "matched": False,
+                            "reasons": fast_result.reasons,
+                            "unresolved_parts": fast_result.unresolved_parts,
+                            "used_rules": fast_result.used_rules,
+                        },
+                    },
+                )
+
+            validated_calls, validation_error = self._prevalidate_tool_calls(fast_result.tool_calls)
+            if validation_error or not validated_calls:
+                reply_text = "快速模式解析到动作，但参数校验失败，请更具体描述。"
+                if validation_error:
+                    reply_text = f"{reply_text} 详情: {validation_error}"
+                plan = self._build_fast_mode_plan(has_tool_calls=False)
+                self._mark_feedback_step_completed(plan)
+                self.short_memory.add_turn(session_id, "assistant", reply_text)
+                await self._remember_turn(session_id, reply_text, {"role": "assistant"}, trace_id)
+                self.metrics.record_request("fast_rule_router")
+                self.metrics.record_fast_request(
+                    matched=False,
+                    partial_success=False,
+                    tool_calls_count=0,
+                    latency_ms=float(fast_result.trace_meta.get("latency_ms", 0.0) or 0.0),
+                )
+                final_error = context_error if context_error not in {None, "disabled"} else None
+                self.traces.finish_trace(trace_id, source="fast_rule_router", error=final_error)
+                return AgentRespondResponse(
+                    session_id=session_id,
+                    reply_text=reply_text,
+                    source="fast_rule_router",
+                    trace_id=trace_id,
+                    tool_call=None,
+                    tool_result=None,
+                    tool_results=[],
+                    plan=[self._to_plan_view(step) for step in plan.steps],
+                    security={
+                        "blocked": False,
+                        "role": role,
+                        "context_error": context_error,
+                        "route": "fast_only",
+                        "route_confidence": 1.0,
+                        "route_agent": "fast_mode",
+                        "candidate_tools": candidate_tool_names,
+                        "interaction_mode": interaction_mode,
+                        "llm_model": active_model,
+                        "llm_model_override": bool(model_override),
+                        "llm_error": None,
+                        "router_mode": "fast",
+                        "llm_skipped": True,
+                        "fast_parse": {
+                            "matched": False,
+                            "reasons": list(dict.fromkeys((fast_result.reasons + ["post_validation_failed"]))),
+                            "unresolved_parts": list(dict.fromkeys((fast_result.unresolved_parts + [validation_error or "post_validation_failed"]))),
+                            "used_rules": fast_result.used_rules,
+                        },
+                    },
+                )
+
+            plan = self.planner.plan_with_tool_calls(tool_calls=validated_calls)
+            self.traces.add_event(
+                trace_id,
+                "planning.done",
+                {
+                    "source": "fast_rule_router",
+                    "tool_calls": [call.tool_name for call in plan.tool_calls],
+                    "unresolved": len(plan.unresolved_queries),
+                },
+            )
+            tool_results = await self.executor.execute(
+                plan.tool_calls,
+                trace_id=trace_id,
+                role=role,
+                metadata=metadata,
+            )
+            self._mark_act_step_status(plan, tool_results)
+            self.traces.add_event(
+                trace_id,
+                "action.executed",
+                {
+                    "count": len(tool_results),
+                    "success": sum(1 for row in tool_results if row.get("success")),
+                },
+            )
+            for row in tool_results:
+                if row.get("rollback"):
+                    continue
+                self.metrics.record_tool(str(row.get("tool_name", "unknown")), bool(row.get("success")))
+
+            reply_text = self._render_tool_reply(tool_results)
+            if fast_result.unresolved_parts:
+                reply_text = f"{reply_text} 未执行部分：{'；'.join(fast_result.unresolved_parts)}"
+
+            self._mark_feedback_step_completed(plan)
+            self.short_memory.add_turn(session_id, "assistant", reply_text)
+            await self._remember_turn(session_id, reply_text, {"role": "assistant"}, trace_id)
+            first_tool_result = next((item for item in tool_results if not item.get("rollback")), None)
+            first_tool_call = plan.tool_calls[0] if plan.tool_calls else None
+            self.metrics.record_request("fast_rule_router")
+            self.metrics.record_fast_request(
+                matched=True,
+                partial_success=bool(fast_result.unresolved_parts),
+                tool_calls_count=len(validated_calls),
+                latency_ms=float(fast_result.trace_meta.get("latency_ms", 0.0) or 0.0),
+            )
+
+            final_error = context_error if context_error not in {None, "disabled"} else None
+            self.traces.finish_trace(trace_id, source="fast_rule_router", error=final_error)
+            return AgentRespondResponse(
+                session_id=session_id,
+                reply_text=reply_text,
+                source="fast_rule_router",
+                trace_id=trace_id,
+                tool_call=first_tool_call,
+                tool_result=first_tool_result,
+                tool_results=tool_results,
+                plan=[self._to_plan_view(step) for step in plan.steps],
+                security={
+                    "blocked": False,
+                    "role": role,
+                    "context_error": context_error,
+                    "route": "fast_only",
+                    "route_confidence": 1.0,
+                    "route_agent": "fast_mode",
+                    "candidate_tools": candidate_tool_names,
+                    "interaction_mode": interaction_mode,
+                    "llm_model": active_model,
+                    "llm_model_override": bool(model_override),
+                    "llm_error": None,
+                    "router_mode": "fast",
+                    "llm_skipped": True,
+                    "fast_parse": {
+                        "matched": True,
+                        "reasons": fast_result.reasons,
+                        "unresolved_parts": fast_result.unresolved_parts,
+                        "used_rules": fast_result.used_rules,
+                    },
+                },
+            )
 
         if interaction_mode == INTERACTION_MODE_CHAT:
             plan = self._build_chat_mode_plan()
@@ -1560,13 +1830,27 @@ class AgentService:
             unresolved_queries=[],
         )
 
+    def _build_fast_mode_plan(self, *, has_tool_calls: bool) -> AgentPlan:
+        action_status = "pending" if has_tool_calls else "completed"
+        action_summary = "Execute parsed fast actions" if has_tool_calls else "No executable fast action"
+        return AgentPlan(
+            steps=[
+                PlanStep(step_id=1, stage="perceive", summary="Receive user request", status="completed"),
+                PlanStep(step_id=2, stage="fast_route", summary="Fast mode: rule-based routing", status="completed"),
+                PlanStep(step_id=3, stage="act", summary=action_summary, status=action_status),
+                PlanStep(step_id=4, stage="feedback", summary="Generate reply and update memory", status="pending"),
+            ],
+            tool_calls=[],
+            unresolved_queries=[],
+        )
+
     def _resolve_interaction_mode(self, metadata: dict[str, Any]) -> str:
         for key in ("interaction_mode", "ui_mode", "mode"):
             raw = metadata.get(key)
             if not isinstance(raw, str):
                 continue
             value = raw.strip().lower()
-            if value in {INTERACTION_MODE_AGENT, INTERACTION_MODE_CHAT}:
+            if value in {INTERACTION_MODE_AGENT, INTERACTION_MODE_CHAT, INTERACTION_MODE_FAST}:
                 return value
         return INTERACTION_MODE_AGENT
 
