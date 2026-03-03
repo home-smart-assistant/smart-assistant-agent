@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ ROUTE_TO_AGENT = {
     DEVICE_MAINTENANCE_ROUTE: "device_maintenance_agent",
     FAMILY_SCHEDULE_ROUTE: "family_schedule_agent",
 }
+AGENT_TO_ROUTE = {value: key for key, value in ROUTE_TO_AGENT.items()}
 
 
 class AgentRuntimeError(Exception):
@@ -107,6 +109,7 @@ class AgentService:
         self.llm_provider = build_llm_provider(config)
         self.traces = TraceStore(max_items=config.agent_trace_max_items)
         self.metrics = MetricsStore()
+        self._entity_hint_cache: dict[str, dict[str, Any]] = {}
         self.permissions.set_whitelist(self.catalog.enabled_tool_names())
 
     async def respond(self, req: AgentRespondRequest) -> AgentRespondResponse:
@@ -224,42 +227,10 @@ class AgentService:
                 },
             )
 
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        intent_decision, intent_error, intent_prompt_tokens, intent_completion_tokens = await self._decide_intent_route(
-            session_id=session_id,
-            text=text,
-            metadata=metadata,
-            model_override=model_override,
-        )
-        total_prompt_tokens += intent_prompt_tokens
-        total_completion_tokens += intent_completion_tokens
-        if intent_decision is None:
-            if total_prompt_tokens > 0 or total_completion_tokens > 0:
-                self.metrics.record_tokens(
-                    prompt_tokens=total_prompt_tokens,
-                    completion_tokens=total_completion_tokens,
-                )
-                self.traces.add_event(
-                    trace_id,
-                    "llm.tokens",
-                    {
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                    },
-                )
-            self._raise_llm_failure(
-                trace_id=trace_id,
-                stage="intent_router",
-                llm_error=intent_error or "intent_router_failed",
-                active_model=active_model,
-            )
-
-        route_agent = ROUTE_TO_AGENT.get(intent_decision.route, "knowledge_agent")
         user_area = self._resolve_user_area(text, metadata)
         candidate_limit = max(1, self.config.agent_candidate_tool_limit)
-        candidate_tool_names = self.catalog.candidate_tool_names(
-            route_agent=route_agent,
+        prefiltered_tool_names = self.catalog.candidate_tool_names(
+            route_agent=None,
             role=role,
             runtime_env=self.config.agent_runtime_env,
             session_id=session_id,
@@ -268,6 +239,96 @@ class AgentService:
             is_role_allowed=self.permissions.is_allowed,
             limit=candidate_limit,
         )
+        prefiltered_agents = self.catalog.allowed_agents_for_tools(prefiltered_tool_names)
+
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        intent_error: str | None = None
+        intent_decision: IntentRouteDecision | None = None
+
+        if not prefiltered_tool_names:
+            self._raise_llm_failure(
+                trace_id=trace_id,
+                stage="tool_router",
+                llm_error="no_candidate_tools",
+                active_model=active_model,
+            )
+
+        if self.config.agent_intent_router_enabled and len(prefiltered_agents) > 1:
+            intent_decision, intent_error, intent_prompt_tokens, intent_completion_tokens = await self._decide_intent_route(
+                session_id=session_id,
+                text=text,
+                metadata=metadata,
+                model_override=model_override,
+            )
+            total_prompt_tokens += intent_prompt_tokens
+            total_completion_tokens += intent_completion_tokens
+            if intent_decision is None:
+                if total_prompt_tokens > 0 or total_completion_tokens > 0:
+                    self.metrics.record_tokens(
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                    )
+                    self.traces.add_event(
+                        trace_id,
+                        "llm.tokens",
+                        {
+                            "prompt_tokens": total_prompt_tokens,
+                            "completion_tokens": total_completion_tokens,
+                        },
+                    )
+                self._raise_llm_failure(
+                    trace_id=trace_id,
+                    stage="intent_router",
+                    llm_error=intent_error or "intent_router_failed",
+                    active_model=active_model,
+                )
+
+            route_agent = ROUTE_TO_AGENT.get(intent_decision.route, "knowledge_agent")
+            candidate_tool_names = self.catalog.candidate_tool_names(
+                route_agent=route_agent,
+                role=role,
+                runtime_env=self.config.agent_runtime_env,
+                session_id=session_id,
+                user_area=user_area,
+                ha_context=ha_context,
+                is_role_allowed=self.permissions.is_allowed,
+                limit=candidate_limit,
+            )
+        else:
+            if len(prefiltered_agents) == 1:
+                route_agent = next(iter(prefiltered_agents))
+                route = AGENT_TO_ROUTE.get(route_agent, HOME_AUTOMATION_ROUTE)
+                intent_decision = IntentRouteDecision(
+                    route=route,
+                    confidence=1.0,
+                    reason="single_agent_candidate_set",
+                    source="catalog",
+                )
+            else:
+                route_agent = ROUTE_TO_AGENT.get(HOME_AUTOMATION_ROUTE, "home_automation_agent")
+                route = AGENT_TO_ROUTE.get(route_agent, HOME_AUTOMATION_ROUTE)
+                intent_decision = IntentRouteDecision(
+                    route=route,
+                    confidence=1.0,
+                    reason="intent_router_disabled",
+                    source="config",
+                )
+            candidate_tool_names = prefiltered_tool_names
+
+        if intent_decision is None:
+            self._raise_llm_failure(
+                trace_id=trace_id,
+                stage="intent_router",
+                llm_error=intent_error or "intent_router_failed",
+                active_model=active_model,
+            )
+
+        candidate_tool_names, domain_prune_meta = await self._prune_candidate_tools_by_entity_hints(
+            user_text=text,
+            candidate_tool_names=candidate_tool_names,
+        )
+
         candidate_tool_schemas = self.catalog.tool_schemas(
             candidate_tool_names=candidate_tool_names,
             limit=candidate_limit,
@@ -296,6 +357,8 @@ class AgentService:
                 "tool_names": candidate_tool_names,
             },
         )
+        if domain_prune_meta:
+            self.traces.add_event(trace_id, "routing.domain_prune", domain_prune_meta)
 
         if not candidate_tool_schemas:
             self._raise_llm_failure(
@@ -307,6 +370,7 @@ class AgentService:
 
         routed_calls, router_text, routing_error, prompt_used, completion_used = await self._route_tools_with_llm(
             session_id=session_id,
+            user_text=text,
             ha_context=ha_context,
             recalled_snippets=recalled_snippets,
             candidate_tool_schemas=candidate_tool_schemas,
@@ -358,30 +422,107 @@ class AgentService:
                 },
             )
         if not filtered_calls:
-            if total_prompt_tokens > 0 or total_completion_tokens > 0:
-                self.metrics.record_tokens(
-                    prompt_tokens=total_prompt_tokens,
-                    completion_tokens=total_completion_tokens,
-                )
-                self.traces.add_event(
-                    trace_id,
-                    "llm.tokens",
-                    {
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                    },
-                )
-            self._raise_llm_failure(
-                trace_id=trace_id,
-                stage="tool_router",
-                llm_error="no_tool_call_generated",
-                active_model=active_model,
+            repaired_calls, repair_error, repair_prompt_tokens, repair_completion_tokens = await self._repair_tool_calls_with_llm(
+                session_id=session_id,
+                user_text=text,
+                ha_context=ha_context,
+                recalled_snippets=recalled_snippets,
+                candidate_tool_schemas=candidate_tool_schemas,
+                allowed_tool_names=candidate_tool_names,
+                original_calls=[],
+                validation_error="no_tool_call_generated",
+                model_override=model_override,
             )
+            total_prompt_tokens += repair_prompt_tokens
+            total_completion_tokens += repair_completion_tokens
+            self.traces.add_event(
+                trace_id,
+                "routing.repair",
+                {
+                    "attempted": True,
+                    "original_calls": [],
+                    "repaired_calls": [call.tool_name for call in repaired_calls],
+                    "original_error": "no_tool_call_generated",
+                    "repair_error": repair_error,
+                },
+            )
+            if repair_error or not repaired_calls:
+                if total_prompt_tokens > 0 or total_completion_tokens > 0:
+                    self.metrics.record_tokens(
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                    )
+                    self.traces.add_event(
+                        trace_id,
+                        "llm.tokens",
+                        {
+                            "prompt_tokens": total_prompt_tokens,
+                            "completion_tokens": total_completion_tokens,
+                        },
+                    )
+                self._raise_llm_failure(
+                    trace_id=trace_id,
+                    stage="tool_router",
+                    llm_error=repair_error or "no_tool_call_generated",
+                    active_model=active_model,
+                )
+            filtered_calls = repaired_calls
+
+        timed_sequence_error = self._timed_sequence_validation_error(text=text, calls=filtered_calls)
+        if timed_sequence_error:
+            repaired_calls, repair_error, repair_prompt_tokens, repair_completion_tokens = await self._repair_tool_calls_with_llm(
+                session_id=session_id,
+                user_text=text,
+                ha_context=ha_context,
+                recalled_snippets=recalled_snippets,
+                candidate_tool_schemas=candidate_tool_schemas,
+                allowed_tool_names=candidate_tool_names,
+                original_calls=filtered_calls,
+                validation_error=timed_sequence_error,
+                model_override=model_override,
+            )
+            total_prompt_tokens += repair_prompt_tokens
+            total_completion_tokens += repair_completion_tokens
+            self.traces.add_event(
+                trace_id,
+                "routing.repair",
+                {
+                    "attempted": True,
+                    "original_calls": [call.tool_name for call in filtered_calls],
+                    "repaired_calls": [call.tool_name for call in repaired_calls],
+                    "original_error": timed_sequence_error,
+                    "repair_error": repair_error,
+                },
+            )
+            if repair_error or not repaired_calls:
+                if total_prompt_tokens > 0 or total_completion_tokens > 0:
+                    self.metrics.record_tokens(
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                    )
+                    self.traces.add_event(
+                        trace_id,
+                        "llm.tokens",
+                        {
+                            "prompt_tokens": total_prompt_tokens,
+                            "completion_tokens": total_completion_tokens,
+                        },
+                    )
+                self._raise_llm_failure(
+                    trace_id=trace_id,
+                    stage="tool_router",
+                    llm_error=repair_error or timed_sequence_error,
+                    active_model=active_model,
+                )
+            filtered_calls = repaired_calls
+
+        filtered_calls = self._normalize_timed_sequence_calls(text=text, calls=filtered_calls)
 
         validated_calls, validation_error = self._prevalidate_tool_calls(filtered_calls)
         if validation_error:
             repaired_calls, repair_error, repair_prompt_tokens, repair_completion_tokens = await self._repair_tool_calls_with_llm(
                 session_id=session_id,
+                user_text=text,
                 ha_context=ha_context,
                 recalled_snippets=recalled_snippets,
                 candidate_tool_schemas=candidate_tool_schemas,
@@ -632,6 +773,7 @@ class AgentService:
     async def _route_tools_with_llm(
         self,
         session_id: str,
+        user_text: str,
         ha_context: dict[str, Any] | None,
         recalled_snippets: list[str],
         candidate_tool_schemas: list[dict[str, Any]],
@@ -641,10 +783,12 @@ class AgentService:
         if not self.llm_provider:
             return [], None, "llm_disabled", 0, 0
 
-        messages = self._build_router_messages(
+        messages = await self._build_router_messages(
             session_id=session_id,
+            user_text=user_text,
             ha_context=ha_context,
             recalled_snippets=recalled_snippets,
+            candidate_tool_names=allowed_tool_names,
         )
         response = await self.llm_provider.chat(messages, tools=candidate_tool_schemas, model=model_override)
         prompt_tokens, completion_tokens = self._token_usage_from_response(messages, response)
@@ -658,6 +802,7 @@ class AgentService:
         self,
         *,
         session_id: str,
+        user_text: str,
         ha_context: dict[str, Any] | None,
         recalled_snippets: list[str],
         candidate_tool_schemas: list[dict[str, Any]],
@@ -669,10 +814,12 @@ class AgentService:
         if not self.llm_provider:
             return [], "llm_disabled", 0, 0
 
-        messages = self._build_router_messages(
+        messages = await self._build_router_messages(
             session_id=session_id,
+            user_text=user_text,
             ha_context=ha_context,
             recalled_snippets=recalled_snippets,
+            candidate_tool_names=allowed_tool_names,
         )
         fix_prompt = (
             "Previous tool_calls failed schema validation. "
@@ -817,11 +964,13 @@ class AgentService:
             return None, response.error, prompt_tokens, 0
         return response.text, None, prompt_tokens, completion_tokens
 
-    def _build_router_messages(
+    async def _build_router_messages(
         self,
         session_id: str,
+        user_text: str,
         ha_context: dict[str, Any] | None,
         recalled_snippets: list[str],
+        candidate_tool_names: list[str],
     ) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": build_tool_router_system_prompt(self.config.llm_system_prompt)}
@@ -829,16 +978,241 @@ class AgentService:
         context_prompt = self.context_service.build_prompt(ha_context)
         if context_prompt:
             messages.append({"role": "system", "content": context_prompt})
-        if recalled_snippets:
+
+        entity_hints_prompt = await self._build_router_entity_hints(
+            user_text=user_text,
+            candidate_tool_names=candidate_tool_names,
+        )
+        if entity_hints_prompt:
+            messages.append({"role": "system", "content": entity_hints_prompt})
+
+        if self.config.agent_router_include_memory_hints and recalled_snippets:
             limited = self._filter_router_memory_snippets(recalled_snippets)[: self.config.long_term_memory_top_k]
-            memory_prompt = "Long-term memory hints:\n" + "\n".join(f"- {item}" for item in limited)
-            messages.append({"role": "system", "content": memory_prompt})
-        turns = self.short_memory.get_window(session_id, max_history_turns=self.config.llm_max_history_turns)
+            if limited:
+                memory_prompt = "Long-term memory hints:\n" + "\n".join(f"- {item}" for item in limited)
+                messages.append({"role": "system", "content": memory_prompt})
+
+        history_turns = max(1, self.config.agent_router_max_history_turns)
+        turns = self.short_memory.get_window(session_id, max_history_turns=history_turns)
         for turn in turns:
             role = turn.role if turn.role in {"user", "assistant"} else "user"
             if turn.content:
                 messages.append({"role": role, "content": turn.content})
         return messages
+
+    async def _build_router_entity_hints(
+        self,
+        *,
+        user_text: str,
+        candidate_tool_names: list[str],
+    ) -> str | None:
+        if not self.config.agent_router_entity_hints_enabled:
+            return None
+
+        hint_domains = self.catalog.hint_domains_for_tools(candidate_tool_names)
+        if not hint_domains:
+            return None
+
+        max_items = max(1, min(20, int(self.config.agent_router_entity_hints_limit)))
+        payload: list[dict[str, Any]] = []
+        for domain in hint_domains:
+            entities, _ = await self._fetch_entities_for_hint_domain(
+                domain=domain,
+                limit=max_items * 4,
+            )
+            if not entities:
+                continue
+
+            scored: list[tuple[int, dict[str, Any]]] = []
+            for row in entities:
+                entity_id = str(row.get("entity_id", "")).strip()
+                if not entity_id:
+                    continue
+                friendly_name = str(row.get("friendly_name", "")).strip()
+                score = self._entity_match_score(
+                    user_text=user_text,
+                    friendly_name=friendly_name,
+                    entity_id=entity_id,
+                )
+                scored.append(
+                    (
+                        score,
+                        {
+                            "entity_id": entity_id,
+                            "friendly_name": friendly_name or None,
+                            "state": str(row.get("state", "")).strip() or None,
+                        },
+                    )
+                )
+
+            if not scored:
+                continue
+
+            scored.sort(key=lambda item: item[0], reverse=True)
+            top_entities = [item[1] for item in scored[:max_items]]
+            payload.append({"domain": domain, "entities": top_entities})
+
+        if not payload:
+            return None
+        return (
+            "Candidate HA entities for precise targeting. "
+            "If user names a specific device, prefer using entity_id:\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+
+    async def _prune_candidate_tools_by_entity_hints(
+        self,
+        *,
+        user_text: str,
+        candidate_tool_names: list[str],
+    ) -> tuple[list[str], dict[str, Any] | None]:
+        if not self.config.agent_router_domain_prune_enabled:
+            return candidate_tool_names, None
+        if len(candidate_tool_names) <= 1:
+            return candidate_tool_names, None
+
+        hint_domains = self.catalog.hint_domains_for_tools(candidate_tool_names)
+        if len(hint_domains) <= 1:
+            return candidate_tool_names, None
+
+        scores: dict[str, int] = {}
+        for domain in hint_domains:
+            entities, _ = await self._fetch_entities_for_hint_domain(domain=domain, limit=120)
+            if not entities:
+                continue
+            best_score = 0
+            for row in entities:
+                entity_id = str(row.get("entity_id", "")).strip()
+                if not entity_id:
+                    continue
+                friendly_name = str(row.get("friendly_name", "")).strip()
+                score = self._entity_match_score(
+                    user_text=user_text,
+                    friendly_name=friendly_name,
+                    entity_id=entity_id,
+                )
+                if score > best_score:
+                    best_score = score
+            scores[domain] = best_score
+
+        if not scores:
+            return candidate_tool_names, None
+
+        best_domain = max(scores, key=scores.get)
+        best_score = scores.get(best_domain, 0)
+        min_score = max(1, int(self.config.agent_router_domain_prune_min_score))
+        if best_score < min_score:
+            return candidate_tool_names, {
+                "applied": False,
+                "reason": "score_too_low",
+                "scores": scores,
+                "best_domain": best_domain,
+                "best_score": best_score,
+                "min_score": min_score,
+            }
+
+        filtered = [name for name in candidate_tool_names if self.catalog.hint_domain_for_tool(name) == best_domain]
+        if not filtered or len(filtered) >= len(candidate_tool_names):
+            return candidate_tool_names, {
+                "applied": False,
+                "reason": "no_effect",
+                "scores": scores,
+                "best_domain": best_domain,
+                "best_score": best_score,
+                "min_score": min_score,
+            }
+
+        return filtered, {
+            "applied": True,
+            "scores": scores,
+            "best_domain": best_domain,
+            "best_score": best_score,
+            "min_score": min_score,
+            "before_count": len(candidate_tool_names),
+            "after_count": len(filtered),
+            "before_tools": candidate_tool_names,
+            "after_tools": filtered,
+        }
+
+    async def _fetch_entities_for_hint_domain(
+        self,
+        *,
+        domain: str,
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        key = f"{domain}:{max(1, limit)}"
+        now = time.time()
+        ttl_seconds = max(1.0, float(self.config.agent_router_entity_hints_ttl_seconds))
+        cached = self._entity_hint_cache.get(key)
+        if cached:
+            cached_at = float(cached.get("fetched_at", 0.0) or 0.0)
+            if cached_at > 0 and (now - cached_at) <= ttl_seconds:
+                rows = cached.get("rows")
+                if isinstance(rows, list):
+                    return [item for item in rows if isinstance(item, dict)], None
+
+        params = {"domain": domain, "limit": max(1, min(500, int(limit)))}
+        timeout_seconds = max(0.5, float(self.config.agent_router_entity_hints_timeout_seconds))
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                resp = await client.get(
+                    f"{self.config.ha_bridge_url}/v1/ha/entities",
+                    params=params,
+                )
+                if resp.status_code >= 400:
+                    return [], f"entity_hints_status_{resp.status_code}"
+                payload = resp.json()
+        except Exception as ex:
+            return [], f"entity_hints_unreachable:{ex}"
+
+        if not isinstance(payload, dict) or not payload.get("success"):
+            return [], "entity_hints_invalid_payload"
+        raw_entities = payload.get("entities")
+        if not isinstance(raw_entities, list):
+            return [], "entity_hints_invalid_payload"
+
+        rows = [item for item in raw_entities if isinstance(item, dict)]
+        self._entity_hint_cache[key] = {"fetched_at": now, "rows": rows}
+        return rows, None
+
+    def _entity_match_score(
+        self,
+        *,
+        user_text: str,
+        friendly_name: str,
+        entity_id: str,
+    ) -> int:
+        source = self._normalize_match_text(user_text)
+        target = self._normalize_match_text(f"{friendly_name} {entity_id}")
+        if not source or not target:
+            return 0
+
+        score = 0
+        if source in target:
+            score += 100
+
+        source_tokens = self._tokenize_match_text(source)
+        for token in source_tokens:
+            if token in target:
+                score += 4 + len(token)
+
+        source_chars = {ch for ch in source if not ch.isspace()}
+        target_chars = {ch for ch in target if not ch.isspace()}
+        score += len(source_chars.intersection(target_chars))
+        return score
+
+    def _normalize_match_text(self, text: str) -> str:
+        lowered = (text or "").strip().lower()
+        if not lowered:
+            return ""
+        return re.sub(r"[\s,.;:!?()\\[\\]{}'\"`~@#$%^&*+=|/\\\\<>-]+", " ", lowered).strip()
+
+    def _tokenize_match_text(self, text: str) -> list[str]:
+        if not text:
+            return []
+        raw = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]{2,}", text)
+        tokens = [item for item in raw if len(item) >= 2]
+        return list(dict.fromkeys(tokens))
 
     def _build_llm_messages(
         self,
@@ -1008,6 +1382,106 @@ class AgentService:
                 continue
             filtered.append(snippet)
         return filtered
+
+    def _timed_sequence_validation_error(self, *, text: str, calls: list[ToolCall]) -> str | None:
+        if not self._requires_timed_opposite_actions(text):
+            return None
+        if len(calls) < 2:
+            return "timed_sequence_incomplete:expected_multiple_tool_calls"
+        if not self._has_opposite_action_pair(calls):
+            return "timed_sequence_incomplete:missing_opposite_action_pair"
+        return None
+
+    def _requires_timed_opposite_actions(self, text: str) -> bool:
+        raw = (text or "").strip().lower()
+        if not raw:
+            return False
+        has_time = bool(
+            re.search(
+                r"\d+\s*(秒|秒钟|分钟|分|小时|s|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours)\s*(后|later|after)",
+                raw,
+            )
+        )
+        if not has_time:
+            return False
+
+        open_hints = ("打开", "开启", "turn on", "open")
+        close_hints = ("关闭", "关掉", "关上", "熄灭", "turn off", "close")
+        has_open = any(token in raw for token in open_hints)
+        has_close = any(token in raw for token in close_hints)
+        return has_open and has_close
+
+    def _has_opposite_action_pair(self, calls: list[ToolCall]) -> bool:
+        names = [call.tool_name.strip().lower() for call in calls if call.tool_name.strip()]
+        if not names:
+            return False
+
+        has_on = any(name.endswith(".on") or name.endswith(".open") for name in names)
+        has_off = any(name.endswith(".off") or name.endswith(".close") for name in names)
+        return has_on and has_off
+
+    def _normalize_timed_sequence_calls(self, *, text: str, calls: list[ToolCall]) -> list[ToolCall]:
+        if not self._requires_timed_opposite_actions(text):
+            return calls
+        if len(calls) < 2:
+            return calls
+
+        delay_value = self._parse_delay_seconds_from_text(text)
+        off_indices = [
+            index for index, call in enumerate(calls) if self._is_off_action_tool(call.tool_name)
+        ]
+        delay_target = off_indices[0] if off_indices else len(calls) - 1
+
+        normalized: list[ToolCall] = []
+        for index, call in enumerate(calls):
+            arguments = dict(call.arguments)
+            if index != delay_target:
+                arguments.pop("delay_seconds", None)
+            else:
+                current = arguments.get("delay_seconds")
+                if delay_value is not None:
+                    if current is None:
+                        arguments["delay_seconds"] = delay_value
+                    else:
+                        try:
+                            parsed = float(current)
+                        except (TypeError, ValueError):
+                            arguments["delay_seconds"] = delay_value
+                        else:
+                            if parsed <= 0:
+                                arguments["delay_seconds"] = delay_value
+            normalized.append(ToolCall(tool_name=call.tool_name, arguments=arguments))
+        return normalized
+
+    def _parse_delay_seconds_from_text(self, text: str) -> float | None:
+        raw = (text or "").strip().lower()
+        if not raw:
+            return None
+
+        match = re.search(
+            r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>秒|秒钟|分钟|分|小时|s|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours)\s*(后|later|after)",
+            raw,
+        )
+        if not match:
+            return None
+
+        try:
+            value = float(match.group("value"))
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+
+        unit = str(match.group("unit") or "").strip().lower()
+        if unit in {"分钟", "分", "min", "mins", "minute", "minutes"}:
+            value *= 60
+        elif unit in {"小时", "hour", "hours"}:
+            value *= 3600
+        return min(round(value, 3), 3600.0)
+
+    def _is_off_action_tool(self, tool_name: str) -> bool:
+        name = (tool_name or "").strip().lower()
+        return name.endswith(".off") or name.endswith(".close")
 
     def _raise_llm_failure(
         self,

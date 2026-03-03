@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -142,6 +143,10 @@ class ActionExecutor:
                 "executed": False,
             }
 
+        delay_seconds = self._extract_delay_seconds(normalized_arguments)
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
         payload = {
             "tool_name": tool_call.tool_name,
             "arguments": normalized_arguments,
@@ -221,3 +226,15 @@ class ActionExecutor:
             result["rollback"] = True
             results.append(result)
         return results
+
+    def _extract_delay_seconds(self, arguments: dict[str, Any]) -> float:
+        raw = arguments.pop("delay_seconds", None)
+        if raw is None:
+            return 0.0
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+        if value <= 0:
+            return 0.0
+        return min(value, 3600.0)

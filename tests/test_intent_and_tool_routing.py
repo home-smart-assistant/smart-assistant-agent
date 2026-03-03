@@ -136,6 +136,41 @@ class _RepairableUnknownArgsToolProvider:
         return {"provider": self.name}
 
 
+class _TimedSequenceRepairProvider:
+    name = "ollama"
+
+    def __init__(self) -> None:
+        self._tool_route_count = 0
+
+    async def chat(self, messages, tools=None, model=None):
+        if tools:
+            self._tool_route_count += 1
+            if self._tool_route_count == 1:
+                return LlmResponse(
+                    text="",
+                    prompt_tokens=10,
+                    completion_tokens=6,
+                    tool_calls=[LlmToolCall(tool_name="home.lights.on", arguments={"area": "living_room", "delay_seconds": 3})],
+                )
+            return LlmResponse(
+                text="",
+                prompt_tokens=12,
+                completion_tokens=8,
+                tool_calls=[
+                    LlmToolCall(tool_name="home.lights.on", arguments={"area": "living_room"}),
+                    LlmToolCall(tool_name="home.lights.off", arguments={"area": "living_room", "delay_seconds": 3}),
+                ],
+            )
+        return LlmResponse(
+            text='{"route":"home_automation","confidence":0.93,"reason":"home control"}',
+            prompt_tokens=6,
+            completion_tokens=5,
+        )
+
+    def health_meta(self):
+        return {"provider": self.name}
+
+
 def _test_config() -> AppConfig:
     return AppConfig(
         ha_bridge_url="http://127.0.0.1:1",
@@ -172,10 +207,43 @@ def _inject_catalog_with_light_on(service: AgentService) -> None:
     service.permissions.set_whitelist(service.catalog.enabled_tool_names())
 
 
+def _inject_catalog_with_light_on_off(service: AgentService) -> None:
+    rows = [
+        {
+            "tool_name": "home.lights.on",
+            "description": "Turn on lights by area",
+            "strategy": "light_area",
+            "domain": "light",
+            "service": "turn_on",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+        {
+            "tool_name": "home.lights.off",
+            "description": "Turn off lights by area",
+            "strategy": "light_area",
+            "domain": "light",
+            "service": "turn_off",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+    ]
+    service.catalog._specs = service.catalog._build_specs_from_rows(rows)
+    service.catalog._catalog_source = "bridge"
+    service.catalog._api_endpoints = {("POST", "/v1/tools/call")}
+    service.catalog.refresh = lambda force=False: None
+    service.permissions.set_whitelist(service.catalog.enabled_tool_names())
+
+
 class TestAgentLlmStrictMode(unittest.IsolatedAsyncioTestCase):
     async def test_agent_mode_llm_disabled_returns_503(self) -> None:
         service = AgentService(_test_config())
         service.llm_provider = None
+        _inject_catalog_with_light_on(service)
 
         req = AgentRespondRequest(text="打开餐厅灯", metadata={"interaction_mode": "agent"})
         with self.assertRaises(AgentRuntimeError) as cm:
@@ -183,7 +251,7 @@ class TestAgentLlmStrictMode(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(503, cm.exception.status_code)
         self.assertEqual("llm_unreachable", cm.exception.payload.get("error_code"))
-        self.assertEqual("intent_router", cm.exception.payload.get("stage"))
+        self.assertEqual("tool_router", cm.exception.payload.get("stage"))
 
     async def test_chat_mode_timeout_returns_504(self) -> None:
         service = AgentService(_test_config())
@@ -297,6 +365,42 @@ class TestAgentLlmStrictMode(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"area": "dining_room"}, resp.tool_call.arguments)
         service.executor.execute.assert_called_once()
 
+    async def test_timed_sequence_repair_requires_opposite_actions(self) -> None:
+        service = AgentService(_test_config())
+        service.llm_provider = _TimedSequenceRepairProvider()
+        _inject_catalog_with_light_on_off(service)
+        service.executor.execute = AsyncMock(
+            return_value=[
+                {
+                    "tool_name": "home.lights.on",
+                    "arguments": {"area": "living_room"},
+                    "success": True,
+                    "message": "HA call succeeded",
+                    "trace_id": "test-trace",
+                    "executed": True,
+                },
+                {
+                    "tool_name": "home.lights.off",
+                    "arguments": {"area": "living_room", "delay_seconds": 3},
+                    "success": True,
+                    "message": "HA call succeeded",
+                    "trace_id": "test-trace",
+                    "executed": True,
+                },
+            ]
+        )
+
+        req = AgentRespondRequest(text="打开客厅的灯，3秒后关闭", metadata={"interaction_mode": "agent"})
+        resp = await service.respond(req)
+        self.assertEqual("llm_tool_router", resp.source)
+        self.assertEqual(2, len(resp.tool_results))
+        calls = service.executor.execute.call_args.args[0]
+        self.assertEqual(2, len(calls))
+        self.assertEqual("home.lights.on", calls[0].tool_name)
+        self.assertEqual("home.lights.off", calls[1].tool_name)
+        self.assertNotIn("delay_seconds", calls[0].arguments)
+        self.assertEqual(3, calls[1].arguments.get("delay_seconds"))
+
     async def test_metadata_route_is_ignored(self) -> None:
         service = AgentService(_test_config())
         service.llm_provider = _KnowledgeRouteProvider()
@@ -383,6 +487,27 @@ class TestCatalogBehavior(unittest.TestCase):
         assert args is not None
         self.assertEqual("dining_room", args.get("area"))
         self.assertNotIn("area_entity_map", args)
+
+    def test_validate_accepts_delay_seconds_for_light_area(self) -> None:
+        self.catalog._specs = self.catalog._build_specs_from_rows(
+            [
+                {
+                    "tool_name": "home.lights.off",
+                    "description": "Turn off lights by area",
+                    "strategy": "light_area",
+                    "domain": "light",
+                    "service": "turn_off",
+                    "enabled": True,
+                    "default_arguments": {},
+                }
+            ]
+        )
+        args, error = self.catalog.validate(
+            ToolCall(tool_name="home.lights.off", arguments={"area": "living_room", "delay_seconds": 3})
+        )
+        self.assertIsNone(error)
+        assert args is not None
+        self.assertEqual(3.0, args.get("delay_seconds"))
 
 
 class TestHttpSemantics(unittest.TestCase):

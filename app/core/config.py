@@ -83,6 +83,15 @@ class AppConfig:
     agent_default_role: str = "operator"
     agent_trace_max_items: int = 200
     text_encoding_strict: bool = True
+    agent_intent_router_enabled: bool = True
+    agent_router_max_history_turns: int = 2
+    agent_router_include_memory_hints: bool = False
+    agent_router_entity_hints_enabled: bool = True
+    agent_router_entity_hints_limit: int = 8
+    agent_router_entity_hints_ttl_seconds: float = 20.0
+    agent_router_entity_hints_timeout_seconds: float = 2.0
+    agent_router_domain_prune_enabled: bool = True
+    agent_router_domain_prune_min_score: int = 4
     agent_tool_whitelist: tuple[str, ...] = (
         "home.lights.on",
         "home.lights.off",
@@ -209,6 +218,15 @@ class AppConfig:
             agent_default_role=os.getenv("AGENT_DEFAULT_ROLE", "operator").strip().lower(),
             agent_trace_max_items=env_int("AGENT_TRACE_MAX_ITEMS", 200),
             text_encoding_strict=env_bool("TEXT_ENCODING_STRICT", True),
+            agent_intent_router_enabled=env_bool("AGENT_INTENT_ROUTER_ENABLED", True),
+            agent_router_max_history_turns=env_int("AGENT_ROUTER_MAX_HISTORY_TURNS", 2),
+            agent_router_include_memory_hints=env_bool("AGENT_ROUTER_INCLUDE_MEMORY_HINTS", False),
+            agent_router_entity_hints_enabled=env_bool("AGENT_ROUTER_ENTITY_HINTS_ENABLED", True),
+            agent_router_entity_hints_limit=env_int("AGENT_ROUTER_ENTITY_HINTS_LIMIT", 8),
+            agent_router_entity_hints_ttl_seconds=env_float("AGENT_ROUTER_ENTITY_HINTS_TTL_SECONDS", 20.0),
+            agent_router_entity_hints_timeout_seconds=env_float("AGENT_ROUTER_ENTITY_HINTS_TIMEOUT_SECONDS", 2.0),
+            agent_router_domain_prune_enabled=env_bool("AGENT_ROUTER_DOMAIN_PRUNE_ENABLED", True),
+            agent_router_domain_prune_min_score=env_int("AGENT_ROUTER_DOMAIN_PRUNE_MIN_SCORE", 4),
             agent_tool_whitelist=whitelist,
             prompt_injection_guard_enabled=env_bool("AGENT_PROMPT_INJECTION_GUARD_ENABLED", True),
             prompt_injection_patterns=patterns,

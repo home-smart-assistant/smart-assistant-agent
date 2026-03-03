@@ -266,7 +266,7 @@
         </label>
         <label>
           Timeout (s)
-          <input id="request-timeout" type="number" min="3" max="120" step="1" value="25" />
+          <input id="request-timeout" type="number" min="3" max="600" step="1" value="180" />
         </label>
       </div>
 
@@ -279,6 +279,7 @@
         Mode `agent` can execute tools; mode `chat` is conversation only.
         Response details (trace/tool/plan) are shown under assistant messages.
         If request fails, error details are shown as a red message.
+        For local 7b/8b models, use timeout 120-300s.
       </div>
     </div>
   </div>
@@ -366,7 +367,7 @@
       promptEl.value = "";
 
       const pending = appendSystem("Agent is thinking...");
-      const timeoutSeconds = Math.max(3, Number(requestTimeoutEl.value || 25));
+      const timeoutSeconds = Math.max(3, Number(requestTimeoutEl.value || 180));
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
 

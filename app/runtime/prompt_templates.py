@@ -34,10 +34,13 @@ def build_tool_router_system_prompt(base_system_prompt: str) -> str:
         "5) If HA context is provided, area must use exact values from context area_id or area_name.\n"
         "6) Do not translate area names by yourself.\n"
         "7) Do not guess a default area.\n"
-        "8) If information is insufficient, return empty tool_calls.\n"
+        "8) If a specific device is explicitly mentioned and candidate entities are provided, prefer entity_id over area.\n"
+        "9) If information is insufficient, return empty tool_calls.\n"
         "Examples:\n"
         '- Input: "打开餐厅的灯" -> call home.lights.on with {"area":"餐厅"} (or exact area_id from HA context)\n'
+        '- Input: "关闭阳台纱帘" with candidate entity cover.yang_tai_sha_lian -> call home.curtains.close with {"entity_id":"cover.yang_tai_sha_lian"}\n'
         '- Input: "打开阳台窗帘" -> call home.curtains.open with {"area":"阳台"} (or exact area_id from HA context)\n'
+        '- Input: "打开客厅的灯，3秒后关闭" -> two calls: home.lights.on({...}), then home.lights.off({...,"delay_seconds":3})\n'
         '- Input: "关闭除了客厅之外所有的灯" -> call home.lights.off with {"area":"all","exclude_areas":["客厅"]} only when schema allows it'
     )
 
