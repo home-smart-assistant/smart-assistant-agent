@@ -29,6 +29,7 @@ from app.runtime.prompt_templates import (
 )
 from app.runtime.fast_router import FastRouter
 from app.tools import ToolCatalog
+from app.tools.catalog import AREA_ALIAS_GROUPS
 
 
 logger = logging.getLogger("smart_assistant_agent")
@@ -239,17 +240,22 @@ class AgentService:
                 candidate_tool_names=candidate_tool_names,
                 catalog=self.catalog,
             )
+            fast_tool_calls, fast_entity_hint_meta = await self._inject_entity_ids_for_fast_calls(
+                user_text=text,
+                tool_calls=fast_result.tool_calls,
+            )
             self.traces.add_event(
                 trace_id,
                 "fast.parse",
                 {
                     "matched": fast_result.matched,
-                    "generated_calls": [row.tool_name for row in fast_result.tool_calls],
+                    "generated_calls": [row.model_dump(mode="json") for row in fast_tool_calls],
                     "candidate_count": len(candidate_tool_names),
                     "latency_ms": fast_result.trace_meta.get("latency_ms", 0.0),
                     "used_rules": fast_result.used_rules,
                     "reasons": fast_result.reasons,
                     "trace": fast_result.trace_meta,
+                    "entity_hint": fast_entity_hint_meta,
                 },
             )
             if fast_result.unresolved_parts:
@@ -259,7 +265,7 @@ class AgentService:
                     {"items": fast_result.unresolved_parts},
                 )
 
-            if not fast_result.tool_calls:
+            if not fast_tool_calls:
                 reply_text = fast_result.reply_text or "快速模式仅支持家居控制，请改成如“打开客厅灯”。"
                 plan = self._build_fast_mode_plan(has_tool_calls=False)
                 self._mark_feedback_step_completed(plan)
@@ -306,7 +312,7 @@ class AgentService:
                     },
                 )
 
-            validated_calls, validation_error = self._prevalidate_tool_calls(fast_result.tool_calls)
+            validated_calls, validation_error = self._prevalidate_tool_calls(fast_tool_calls)
             if validation_error or not validated_calls:
                 reply_text = "快速模式解析到动作，但参数校验失败，请更具体描述。"
                 if validation_error:
@@ -1444,6 +1450,148 @@ class AgentService:
         rows = [item for item in raw_entities if isinstance(item, dict)]
         self._entity_hint_cache[key] = {"fetched_at": now, "rows": rows}
         return rows, None
+
+    async def _inject_entity_ids_for_fast_calls(
+        self,
+        *,
+        user_text: str,
+        tool_calls: list[ToolCall],
+    ) -> tuple[list[ToolCall], dict[str, Any] | None]:
+        if not tool_calls:
+            return tool_calls, None
+
+        target_indices: list[int] = []
+        for index, call in enumerate(tool_calls):
+            if self.catalog.hint_domain_for_tool(call.tool_name) != "cover":
+                continue
+            existing_entity = call.arguments.get("entity_id")
+            if existing_entity is not None and str(existing_entity).strip():
+                continue
+            area = str(call.arguments.get("area", "")).strip()
+            if not area:
+                continue
+            target_indices.append(index)
+        if not target_indices:
+            return tool_calls, None
+
+        entities, hint_error = await self._fetch_entities_for_hint_domain(domain="cover", limit=200)
+        if hint_error:
+            return tool_calls, {"applied": False, "reason": hint_error}
+        if not entities:
+            return tool_calls, {"applied": False, "reason": "no_cover_entities"}
+
+        updated_calls = list(tool_calls)
+        patched: list[dict[str, Any]] = []
+        for index in target_indices:
+            call = updated_calls[index]
+            area = str(call.arguments.get("area", "")).strip()
+            selected = self._select_fast_cover_entity_candidate(
+                user_text=user_text,
+                area=area,
+                entities=entities,
+            )
+            if not selected:
+                continue
+            arguments = dict(call.arguments)
+            arguments["entity_id"] = selected["entity_id"]
+            updated_calls[index] = ToolCall(tool_name=call.tool_name, arguments=arguments)
+            patched.append(
+                {
+                    "tool_name": call.tool_name,
+                    "area": area,
+                    "entity_id": selected["entity_id"],
+                    "score": selected["score"],
+                }
+            )
+
+        if not patched:
+            return tool_calls, {"applied": False, "reason": "no_confident_entity_match"}
+        return updated_calls, {"applied": True, "patched": patched}
+
+    def _select_fast_cover_entity_candidate(
+        self,
+        *,
+        user_text: str,
+        area: str,
+        entities: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        area_tokens = self._fast_area_hint_tokens(area)
+        user_text_norm = self._normalize_match_text(user_text)
+
+        scored: list[tuple[int, str, str]] = []
+        for row in entities:
+            entity_id = str(row.get("entity_id", "")).strip()
+            if not entity_id or not entity_id.lower().startswith("cover."):
+                continue
+            friendly_name = str(row.get("friendly_name", "")).strip()
+
+            score = self._entity_match_score(
+                user_text=user_text,
+                friendly_name=friendly_name,
+                entity_id=entity_id,
+            )
+            target = self._normalize_match_text(f"{friendly_name} {entity_id}")
+
+            area_bonus = 0
+            for token in area_tokens:
+                if token and token in target:
+                    area_bonus = max(area_bonus, 12)
+            if area_tokens and area_bonus <= 0:
+                continue
+            score += area_bonus
+
+            if any(word in user_text_norm for word in ("纱帘", "窗帘", "帘", "curtain", "blind", "shade")):
+                if any(word in target for word in ("纱帘", "窗帘", "帘", "curtain", "blind", "shade")):
+                    score += 6
+            if "纱帘" in user_text_norm:
+                if "纱帘" in target or "sha_lian" in target:
+                    score += 10
+                elif "窗帘" in target or "chuang_lian" in target:
+                    score -= 2
+            if "窗帘" in user_text_norm:
+                if "窗帘" in target or "chuang_lian" in target:
+                    score += 10
+
+            scored.append((score, entity_id, friendly_name))
+
+        if not scored:
+            return None
+
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        best_score, best_entity_id, best_name = scored[0]
+        if best_score < 12:
+            return None
+        if len(scored) > 1:
+            second_score = scored[1][0]
+            if second_score >= 12 and (best_score - second_score) <= 2:
+                return None
+        return {
+            "entity_id": best_entity_id,
+            "friendly_name": best_name,
+            "score": best_score,
+        }
+
+    def _fast_area_hint_tokens(self, area: str) -> list[str]:
+        normalized = str(area or "").strip().lower()
+        if not normalized:
+            return []
+
+        tokens: list[str] = []
+        direct = self._normalize_match_text(normalized)
+        if direct:
+            tokens.append(direct)
+
+        for canonical, aliases in AREA_ALIAS_GROUPS.items():
+            all_values = [canonical, *aliases]
+            lowered_values = [str(item).strip().lower() for item in all_values if str(item).strip()]
+            if normalized not in lowered_values:
+                continue
+            for value in lowered_values:
+                token = self._normalize_match_text(value)
+                if token:
+                    tokens.append(token)
+            break
+        return list(dict.fromkeys(tokens))
 
     def _entity_match_score(
         self,
