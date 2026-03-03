@@ -174,6 +174,60 @@ def _inject_catalog(service: AgentService) -> None:
     service.permissions.set_whitelist(service.catalog.enabled_tool_names())
 
 
+def _inject_catalog_light_domain_auto(service: AgentService) -> None:
+    rows = [
+        {
+            "tool_name": "home.lights.on",
+            "description": "Turn on lights by area",
+            "strategy": "light_area",
+            "domain": "auto",
+            "service": "turn_on",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+        {
+            "tool_name": "home.lights.off",
+            "description": "Turn off lights by area",
+            "strategy": "light_area",
+            "domain": "auto",
+            "service": "turn_off",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+        {
+            "tool_name": "home.curtains.close",
+            "description": "Close covers by area",
+            "strategy": "cover_area",
+            "domain": "cover",
+            "service": "close_cover",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+        {
+            "tool_name": "home.climate.turn_off",
+            "description": "Turn off climate by area",
+            "strategy": "climate_area",
+            "domain": "climate",
+            "service": "turn_off",
+            "enabled": True,
+            "default_arguments": {},
+            "allowed_agents": ["home_automation_agent"],
+            "environment_tags": ["home", "prod"],
+        },
+    ]
+    service.catalog._specs = service.catalog._build_specs_from_rows(rows)
+    service.catalog._catalog_source = "bridge"
+    service.catalog._api_endpoints = {("POST", "/v1/tools/call")}
+    service.catalog.refresh = lambda force=False: None
+    service.permissions.set_whitelist(service.catalog.enabled_tool_names())
+
+
 def _build_service(config: AppConfig) -> AgentService:
     with patch("app.tools.catalog.ToolCatalog.refresh", autospec=True, return_value=None):
         return AgentService(config)
@@ -391,6 +445,20 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("fast_rule_router", resp.source)
         self.assertEqual(0, len(resp.tool_results))
         service.executor.execute.assert_not_called()
+
+    async def test_light_domain_auto_prefers_light_tool_without_ambiguity(self) -> None:
+        service = _build_service(_test_config())
+        service.llm_provider = _MustNotCallLlmProvider()
+        _inject_catalog_light_domain_auto(service)
+        service.executor.execute = AsyncMock(side_effect=_echo_execute)
+
+        resp = await service.respond(
+            AgentRespondRequest(text="\u5173\u95ED\u5BA2\u5385\u706F", metadata={"interaction_mode": "fast"})
+        )
+        self.assertEqual("fast_rule_router", resp.source)
+        self.assertTrue(resp.tool_results)
+        self.assertEqual("home.lights.off", resp.tool_results[0]["tool_name"])
+        self.assertEqual("living_room", resp.tool_results[0]["arguments"].get("area"))
 
     async def test_cn_area_matrix_light_cases_no_bridge(self) -> None:
         service = _build_service(_test_config())

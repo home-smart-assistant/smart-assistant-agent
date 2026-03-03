@@ -433,7 +433,7 @@ class FastRouter:
         tool_name = str(row.get("tool_name", "")).strip().lower()
         strategy = str(row.get("strategy", "")).strip().lower()
         service = str(row.get("service", "")).strip().lower()
-        row_domain = str(row.get("domain", "")).strip().lower()
+        row_domain = self._effective_domain_for_row(row=row)
 
         score = 0
         if row_domain == domain:
@@ -465,3 +465,38 @@ class FastRouter:
             if "brightness" in service or "brightness" in tool_name:
                 score += 10
         return score
+
+    def _effective_domain_for_row(self, *, row: dict[str, Any]) -> str:
+        raw_domain = str(row.get("domain", "")).strip().lower()
+        if raw_domain and raw_domain not in {"auto", "entity"}:
+            return raw_domain
+
+        strategy = str(row.get("strategy", "")).strip().lower()
+        strategy_domain_map = {
+            "light_area": "light",
+            "cover_area": "cover",
+            "climate_area": "climate",
+            "climate_area_temperature": "climate",
+            "switch_area": "switch",
+            "fan_area": "fan",
+            "scene_id": "scene",
+        }
+        mapped = strategy_domain_map.get(strategy)
+        if mapped:
+            return mapped
+
+        tool_name = str(row.get("tool_name", "")).strip().lower()
+        if "light" in tool_name or ".lights." in tool_name:
+            return "light"
+        if "curtain" in tool_name or "cover" in tool_name:
+            return "cover"
+        if "climate" in tool_name or "temperature" in tool_name:
+            return "climate"
+        if "scene" in tool_name:
+            return "scene"
+        if "fan" in tool_name or "purifier" in tool_name:
+            return "fan"
+        if "switch" in tool_name or "heater" in tool_name:
+            return "switch"
+
+        return raw_domain
