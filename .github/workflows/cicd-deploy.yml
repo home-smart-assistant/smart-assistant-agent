@@ -78,7 +78,7 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
           SERVICE_NAME: smart_assistant_agent
           SERVICE_TAG_KEY: AGENT_IMAGE_TAG
-          HEALTH_URL: http://127.0.0.1:8091/v1/agent/metrics
+          HEALTH_PATH: /v1/agent/metrics
         run: |
           set -euo pipefail
           export DOCKER_CLIENT_TIMEOUT=180
@@ -124,6 +124,12 @@ jobs:
           OLLAMA_BASE_URL_VALUE="${DEPLOY_OLLAMA_BASE_URL:-http://192.168.3.101:11434}"
           set_env "OLLAMA_BASE_URL" "$OLLAMA_BASE_URL_VALUE"
           echo "Configured OLLAMA_BASE_URL=$OLLAMA_BASE_URL_VALUE"
+
+          AGENT_PORT_VALUE="$(sed -n 's/^AGENT_PORT=//p' .env | tail -n 1)"
+          if [ -z "${AGENT_PORT_VALUE}" ]; then
+            AGENT_PORT_VALUE="8091"
+          fi
+          HEALTH_URL="http://127.0.0.1:${AGENT_PORT_VALUE}${HEALTH_PATH}"
 
           retry 6 8 docker compose pull "$SERVICE_NAME"
           retry 3 5 docker compose up -d --no-deps "$SERVICE_NAME"
