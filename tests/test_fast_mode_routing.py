@@ -512,6 +512,27 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(tool_name, resp.tool_results[0]["tool_name"])
                 self.assertEqual(area, resp.tool_results[0]["arguments"].get("area"))
 
+    async def test_fast_router_fuzzy_normalizes_home_control_terms(self) -> None:
+        service = _build_service(_test_config())
+        service.llm_provider = _MustNotCallLlmProvider()
+        _inject_catalog(service)
+        service.executor.execute = AsyncMock(side_effect=_echo_execute)
+
+        cases = [
+            ("\u5173\u95ED\u9633\u53F0\u6C99\u8FDE", "home.covers.close", "balcony"),
+            ("\u5173\u95ED\u9633\u53F0\u6C99\u7CAE", "home.covers.close", "balcony"),
+            ("\u6253\u5F00\u517B\u53F0\u7A97\u8FDE", "home.covers.open", "balcony"),
+            ("\u6253\u5F00\u5BA2\u505C\u7684\u706F", "home.lights.on", "living_room"),
+            ("\u6253\u5F00\u5BA2\u5385\u7A7A\u6C14\u51C0\u8BDD\u5668", "home.air_purifier.on", "living_room"),
+        ]
+        for text, tool_name, area in cases:
+            with self.subTest(text=text):
+                resp = await service.respond(AgentRespondRequest(text=text, metadata={"interaction_mode": "fast"}))
+                self.assertEqual("fast_rule_router", resp.source)
+                self.assertTrue(resp.tool_results)
+                self.assertEqual(tool_name, resp.tool_results[0]["tool_name"])
+                self.assertEqual(area, resp.tool_results[0]["arguments"].get("area"))
+
     async def test_fast_cover_entity_hint_fallback_for_unmapped_area(self) -> None:
         service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()

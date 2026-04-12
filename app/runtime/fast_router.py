@@ -3,10 +3,40 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+from functools import lru_cache
 from typing import Any
+
+from pypinyin import lazy_pinyin
 
 from app.core.models import ToolCall
 from app.tools.catalog import AREA_ALIAS_GROUPS, ToolCatalog
+
+
+@dataclass(frozen=True)
+class FuzzyPhraseEntry:
+    canonical: str
+    aliases: tuple[str, ...]
+
+
+ACTION_FUZZY_ENTRIES: tuple[FuzzyPhraseEntry, ...] = (
+    FuzzyPhraseEntry(canonical="打开", aliases=("打开", "开启", "开", "拉开", "升起")),
+    FuzzyPhraseEntry(canonical="关闭", aliases=("关闭", "关掉", "关上", "关", "拉上", "降下")),
+    FuzzyPhraseEntry(canonical="调到", aliases=("调到", "设到", "设置", "设成")),
+    FuzzyPhraseEntry(canonical="温度", aliases=("温度", "度")),
+)
+
+DEVICE_FUZZY_ENTRIES: tuple[FuzzyPhraseEntry, ...] = (
+    FuzzyPhraseEntry(canonical="灯", aliases=("灯", "亮")),
+    FuzzyPhraseEntry(canonical="空调", aliases=("空调",)),
+    FuzzyPhraseEntry(canonical="浴霸", aliases=("浴霸",)),
+    FuzzyPhraseEntry(canonical="空气净化器", aliases=("空气净化器", "净化器")),
+    FuzzyPhraseEntry(canonical="窗帘", aliases=("窗帘", "帘子", "卷帘", "百叶帘", "遮光帘")),
+    FuzzyPhraseEntry(canonical="纱帘", aliases=("纱帘",)),
+    FuzzyPhraseEntry(canonical="场景", aliases=("场景", "模式")),
+)
+
+FUZZY_PHRASE_MIN_SCORE = 0.82
 
 
 @dataclass
@@ -25,6 +55,7 @@ class FastRouter:
         self.max_calls = max(1, int(max_calls))
         self.allow_delay_seconds = bool(allow_delay_seconds)
         self._area_alias_map = self._build_area_alias_map()
+        self._area_fuzzy_entries = self._build_area_fuzzy_entries()
 
     def route(
         self,
@@ -59,8 +90,10 @@ class FastRouter:
                 break
             if not clause:
                 continue
+            normalized_clause = self._normalize_clause_for_fast_parsing(clause)
             parsed = self._parse_clause(
-                clause=clause,
+                clause=normalized_clause,
+                raw_clause=clause,
                 metadata_area=metadata_area,
                 catalog_rows=catalog_rows,
             )
@@ -106,12 +139,14 @@ class FastRouter:
         self,
         *,
         clause: str,
+        raw_clause: str,
         metadata_area: str | None,
         catalog_rows: list[dict[str, Any]],
     ) -> dict[str, Any]:
         reasons: list[str] = []
         unresolved: list[str] = []
         used_rules: list[str] = []
+        display_clause = raw_clause or clause
 
         domain = self._detect_domain(clause)
         action = self._detect_action(clause, domain=domain)
@@ -126,20 +161,20 @@ class FastRouter:
         scene_id = self._extract_scene_id(clause)
 
         if not domain:
-            unresolved.append(f"Unrecognized domain in clause '{clause}'.")
+            unresolved.append(f"Unrecognized domain in clause '{display_clause}'.")
             reasons.append("domain_not_detected")
         if not action:
-            unresolved.append(f"Unrecognized action in clause '{clause}'.")
+            unresolved.append(f"Unrecognized action in clause '{display_clause}'.")
             reasons.append("action_not_detected")
 
         tool_calls: list[ToolCall] = []
         if domain and action:
             selected, ambiguous = self._select_tool(catalog_rows=catalog_rows, domain=domain, action=action)
             if ambiguous:
-                unresolved.append(f"Ambiguous tool match in clause '{clause}'.")
+                unresolved.append(f"Ambiguous tool match in clause '{display_clause}'.")
                 reasons.append("ambiguous_tool")
             elif not selected:
-                unresolved.append(f"No available tool for clause '{clause}'.")
+                unresolved.append(f"No available tool for clause '{display_clause}'.")
                 reasons.append("no_matching_tool")
             else:
                 strategy = str(selected.get("strategy", "")).strip().lower()
@@ -156,7 +191,7 @@ class FastRouter:
                     "fan_area",
                 }:
                     if not areas:
-                        unresolved.append(f"Missing area in clause '{clause}'.")
+                        unresolved.append(f"Missing area in clause '{display_clause}'.")
                         reasons.append("area_missing")
                     else:
                         for area in areas:
@@ -164,21 +199,21 @@ class FastRouter:
                             args["area"] = area
                             if strategy == "climate_area_temperature":
                                 if temperature is None:
-                                    unresolved.append(f"Missing temperature in clause '{clause}'.")
+                                    unresolved.append(f"Missing temperature in clause '{display_clause}'.")
                                     reasons.append("temperature_missing")
                                     continue
                                 args["temperature"] = temperature
                             tool_calls.append(ToolCall(tool_name=tool_name, arguments=args))
                 elif strategy == "scene_id":
                     if not scene_id:
-                        unresolved.append(f"Missing scene id in clause '{clause}'.")
+                        unresolved.append(f"Missing scene id in clause '{display_clause}'.")
                         reasons.append("scene_missing")
                     else:
                         args = dict(args_base)
                         args["scene_id"] = scene_id
                         tool_calls.append(ToolCall(tool_name=tool_name, arguments=args))
                 else:
-                    unresolved.append(f"Unsupported strategy in clause '{clause}'.")
+                    unresolved.append(f"Unsupported strategy in clause '{display_clause}'.")
                     reasons.append("unsupported_strategy")
 
                 if action == "set_brightness" and brightness is not None:
@@ -193,7 +228,8 @@ class FastRouter:
             "unresolved": unresolved,
             "used_rules": used_rules,
             "trace": {
-                "clause": clause,
+                "raw_clause": display_clause,
+                "normalized_clause": clause,
                 "domain": domain,
                 "action": action,
                 "areas": areas,
@@ -223,6 +259,14 @@ class FastRouter:
             .replace("\u4E00\u4E0B", "")
         )
         return re.sub(r"\s+", " ", normalized).strip()
+
+    def _normalize_clause_for_fast_parsing(self, clause: str) -> str:
+        normalized = str(clause or "").strip().lower()
+        if not normalized:
+            return ""
+        for entries in (ACTION_FUZZY_ENTRIES, self._area_fuzzy_entries, DEVICE_FUZZY_ENTRIES):
+            normalized = self._apply_fuzzy_phrase_entries(normalized, entries=entries)
+        return normalized
 
     def _split_clauses(self, text: str) -> list[str]:
         if not text:
@@ -259,6 +303,20 @@ class FastRouter:
         if not raw:
             return None
         return self._area_alias_map.get(raw, raw)
+
+    def _build_area_fuzzy_entries(self) -> tuple[FuzzyPhraseEntry, ...]:
+        entries: list[FuzzyPhraseEntry] = []
+        for canonical, aliases in AREA_ALIAS_GROUPS.items():
+            values = [str(item).strip().lower() for item in aliases if str(item).strip()]
+            if canonical:
+                values.append(str(canonical).strip().lower())
+            deduped = tuple(dict.fromkeys(values))
+            if not deduped:
+                continue
+            chinese_aliases = [value for value in deduped if self._contains_cjk(value)]
+            display = chinese_aliases[0] if chinese_aliases else deduped[0]
+            entries.append(FuzzyPhraseEntry(canonical=display, aliases=deduped))
+        return tuple(entries)
 
     def _detect_domain(self, clause: str) -> str | None:
         if any(
@@ -500,3 +558,122 @@ class FastRouter:
             return "switch"
 
         return raw_domain
+
+    def _apply_fuzzy_phrase_entries(self, text: str, *, entries: tuple[FuzzyPhraseEntry, ...], max_passes: int = 2) -> str:
+        updated = str(text or "")
+        if not updated:
+            return ""
+        for _ in range(max(1, max_passes)):
+            candidate = self._find_best_fuzzy_phrase_candidate(updated, entries=entries)
+            if not candidate:
+                break
+            start, end, replacement, _score = candidate
+            updated = f"{updated[:start]}{replacement}{updated[end:]}"
+        return updated
+
+    def _find_best_fuzzy_phrase_candidate(
+        self,
+        text: str,
+        *,
+        entries: tuple[FuzzyPhraseEntry, ...],
+    ) -> tuple[int, int, str, float] | None:
+        protected_spans = self._collect_exact_alias_spans(text, entries=entries)
+        best_match: tuple[int, int, str, float] | None = None
+
+        for span in re.finditer(r"[\u4e00-\u9fff]{2,}", text):
+            segment = span.group(0)
+            segment_start = span.start()
+            for entry in entries:
+                cjk_aliases = [alias for alias in entry.aliases if self._contains_cjk(alias)]
+                for alias in cjk_aliases:
+                    alias_length = len(alias)
+                    min_len = max(2, alias_length - 1)
+                    max_len = min(len(segment), alias_length + 1)
+                    for offset in range(len(segment)):
+                        for size in range(min_len, max_len + 1):
+                            if offset + size > len(segment):
+                                break
+                            candidate = segment[offset : offset + size]
+                            absolute_start = segment_start + offset
+                            absolute_end = absolute_start + size
+                            if any(self._spans_overlap((absolute_start, absolute_end), row) for row in protected_spans):
+                                continue
+                            if candidate == alias:
+                                continue
+                            score = self._fuzzy_phrase_score(candidate, alias)
+                            if score < FUZZY_PHRASE_MIN_SCORE:
+                                continue
+                            if best_match is None or score > best_match[3]:
+                                best_match = (absolute_start, absolute_end, entry.canonical, score)
+
+        return best_match
+
+    def _collect_exact_alias_spans(
+        self,
+        text: str,
+        *,
+        entries: tuple[FuzzyPhraseEntry, ...],
+    ) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        for entry in entries:
+            for alias in entry.aliases:
+                if not alias or not self._contains_cjk(alias):
+                    continue
+                search_at = 0
+                while True:
+                    index = text.find(alias, search_at)
+                    if index < 0:
+                        break
+                    spans.append((index, index + len(alias)))
+                    search_at = index + len(alias)
+        return spans
+
+    def _fuzzy_phrase_score(self, candidate: str, alias: str) -> float:
+        candidate_tokens = self._phrase_pinyin_tokens(candidate)
+        alias_tokens = self._phrase_pinyin_tokens(alias)
+        if not candidate_tokens or not alias_tokens:
+            return 0.0
+        if abs(len(candidate_tokens) - len(alias_tokens)) > 1:
+            return 0.0
+
+        joined_ratio = SequenceMatcher(None, "".join(candidate_tokens), "".join(alias_tokens)).ratio()
+        position_count = max(len(candidate_tokens), len(alias_tokens))
+        aligned_scores: list[float] = []
+        exact_positions = 0
+        for index in range(min(len(candidate_tokens), len(alias_tokens))):
+            token_score = SequenceMatcher(None, candidate_tokens[index], alias_tokens[index]).ratio()
+            aligned_scores.append(token_score)
+            if candidate_tokens[index] == alias_tokens[index]:
+                exact_positions += 1
+        average_token_ratio = sum(aligned_scores) / position_count if position_count > 0 else 0.0
+        exact_position_ratio = exact_positions / position_count if position_count > 0 else 0.0
+        char_ratio = SequenceMatcher(None, candidate, alias).ratio()
+
+        return (
+            joined_ratio * 0.45
+            + average_token_ratio * 0.35
+            + exact_position_ratio * 0.15
+            + char_ratio * 0.05
+        )
+
+    def _phrase_pinyin_tokens(self, text: str) -> tuple[str, ...]:
+        return _phrase_pinyin_cache(text)
+
+    @staticmethod
+    def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+        return left[0] < right[1] and right[0] < left[1]
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
+@lru_cache(maxsize=2048)
+def _phrase_pinyin_cache(text: str) -> tuple[str, ...]:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return ()
+    syllables = [item for item in lazy_pinyin(normalized, errors="ignore") if item]
+    if syllables:
+        return tuple(syllables)
+    return tuple(ch for ch in normalized if not ch.isspace())
