@@ -240,8 +240,9 @@ class AgentService:
                 candidate_tool_names=candidate_tool_names,
                 catalog=self.catalog,
             )
+            fast_entity_hint_text = self.fast_router.normalize_text_for_entity_matching(text)
             fast_tool_calls, fast_entity_hint_meta = await self._inject_entity_ids_for_fast_calls(
-                user_text=text,
+                user_text=fast_entity_hint_text or text,
                 tool_calls=fast_result.tool_calls,
             )
             self.traces.add_event(

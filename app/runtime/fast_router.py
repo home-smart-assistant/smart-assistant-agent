@@ -260,6 +260,14 @@ class FastRouter:
         )
         return re.sub(r"\s+", " ", normalized).strip()
 
+    def normalize_text_for_entity_matching(self, text: str) -> str:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return ""
+        clauses = self._split_clauses(normalized)
+        rewritten = [self._normalize_clause_for_fast_parsing(clause) for clause in clauses if clause]
+        return ", ".join(item for item in rewritten if item)
+
     def _normalize_clause_for_fast_parsing(self, clause: str) -> str:
         normalized = str(clause or "").strip().lower()
         if not normalized:

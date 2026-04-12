@@ -557,6 +557,30 @@ class TestFastModeRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("cover.yang_tai_sha_lian", resp.tool_results[0]["arguments"].get("entity_id"))
         self.assertEqual("balcony", resp.tool_results[0]["arguments"].get("area"))
 
+    async def test_fast_cover_entity_hint_uses_normalized_text_for_asr_homophones(self) -> None:
+        service = _build_service(_test_config())
+        service.llm_provider = _MustNotCallLlmProvider()
+        _inject_catalog(service)
+        service._fetch_entities_for_hint_domain = AsyncMock(
+            return_value=(
+                [
+                    {"entity_id": "cover.yang_tai_chuang_lian", "friendly_name": "阳台窗帘", "state": "open"},
+                    {"entity_id": "cover.yang_tai_sha_lian", "friendly_name": "阳台纱帘", "state": "closed"},
+                ],
+                None,
+            )
+        )
+        service.executor.execute = AsyncMock(side_effect=_echo_execute)
+
+        resp = await service.respond(
+            AgentRespondRequest(text="关闭阳台沙粮", metadata={"interaction_mode": "fast"})
+        )
+        self.assertEqual("fast_rule_router", resp.source)
+        self.assertTrue(resp.tool_results)
+        self.assertEqual("home.covers.close", resp.tool_results[0]["tool_name"])
+        self.assertEqual("cover.yang_tai_sha_lian", resp.tool_results[0]["arguments"].get("entity_id"))
+        self.assertEqual("balcony", resp.tool_results[0]["arguments"].get("area"))
+
     async def test_unsupported_device_returns_friendly_unresolved(self) -> None:
         service = _build_service(_test_config())
         service.llm_provider = _MustNotCallLlmProvider()
